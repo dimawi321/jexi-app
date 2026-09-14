@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "UserAccountData": {
+      "title": "UserAccountData",
+      "description": "JEXI user account cloud data payload containing payment intentions, recipient profiles, undeletable transaction history, and testnet balances.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Authoritative Firebase Authentication UID matching request.auth.uid"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "version": {
+          "type": "number",
+          "description": "Data payload version number"
+        },
+        "schemaVersion": {
+          "type": "string",
+          "description": "Schema version identifier"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of last update"
+        },
+        "exportedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of payload snapshot"
+        },
+        "recipients": {
+          "type": "array",
+          "description": "List of saved recipient profiles"
+        },
+        "intentions": {
+          "type": "array",
+          "description": "List of payment intentions and schedules"
+        },
+        "history": {
+          "type": "array",
+          "description": "Undeletable historical records of executed transactions"
+        },
+        "balance": {
+          "type": "object",
+          "description": "Simulated testnet wallet balances"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Client sync metadata"
+        }
+      },
+      "required": [
+        "accountId",
+        "userEmail",
+        "version",
+        "schemaVersion",
+        "updatedAt",
+        "recipients",
+        "intentions",
+        "history"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserAccountData"
+      },
+      "description": "Isolated per-user JEXI account data document accessed exclusively by the authenticated user matching request.auth.uid"
+    }
+  }
+}

@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default: deny all unspecified paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAccountData(data, userId) {
+      return data.accountId == userId
+        && data.userEmail is string
+        && data.userEmail.size() > 0
+        && data.userEmail.size() <= 256
+        && data.version is number
+        && data.schemaVersion is string
+        && data.updatedAt is string
+        && data.recipients is list
+        && data.recipients.size() <= 1000
+        && data.intentions is list
+        && data.intentions.size() <= 1000
+        && data.history is list
+        && data.history.size() <= 10000;
+    }
+
+    // Isolated per-user JEXI account document
+    // Document ID must match authenticated user's UID
+    match /users/{userId} {
+      // Unauthenticated users have NO access.
+      // Authenticated users can ONLY read their own document.
+      allow get: if isOwner(userId) && isValidId(userId);
+
+      // Listing all user documents in /users is strictly forbidden
+      allow list: if false;
+
+      // Create: User can create only their own account document with valid schema
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidAccountData(request.resource.data, userId);
+
+      // Update: User can update only their own document.
+      // Invariant 1: accountId cannot be changed
+      // Invariant 2: History is undeletable (history size cannot decrease)
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidAccountData(request.resource.data, userId)
+        && request.resource.data.accountId == resource.data.accountId
+        && request.resource.data.history.size() >= resource.data.history.size();
+
+      // Deletions are strictly disallowed to prevent accidental data or history destruction
+      allow delete: if false;
+    }
+  }
+}
