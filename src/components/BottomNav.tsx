@@ -19,8 +19,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, du
   ];
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800/80 px-2 py-1.5 sm:py-2">
-      <div className="max-w-md mx-auto grid grid-cols-5 gap-1">
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-signa-surface/90 backdrop-blur-md border-t border-signa-subtle px-2 sm:px-4 py-1.5 transition-colors">
+      <div className="max-w-md mx-auto grid grid-cols-5 gap-0.5 sm:gap-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -28,25 +28,28 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, du
             <button
               key={item.id}
               onClick={() => onSelectTab(item.id)}
-              className={`relative flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all ${
+              className={`relative flex flex-col items-center justify-center py-1 px-0.5 sm:px-1 rounded-lg transition-colors cursor-pointer ${
                 isActive
-                  ? 'text-emerald-400 bg-emerald-500/10 font-medium'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
+                  ? 'text-signa-primary font-semibold'
+                  : 'text-signa-muted hover:text-signa-primary'
               }`}
             >
               <div className="relative">
-                <Icon className={`w-5 h-5 transition-transform ${isActive ? 'scale-110' : ''}`} />
+                <Icon className={`w-4 h-4 sm:w-5 sm:h-5 transition-colors ${isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-signa-muted'}`} />
                 {item.badge !== undefined && (
-                  <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-zinc-950 text-[10px] font-extrabold flex items-center justify-center animate-pulse">
+                  <span className="absolute -top-1 -right-2 min-w-[14px] h-3.5 px-1 rounded-full bg-amber-500 text-white dark:text-zinc-950 text-[9px] font-bold font-mono flex items-center justify-center shadow-xs">
                     {item.badge}
                   </span>
                 )}
               </div>
-              <span className="text-[11px] mt-1 tracking-tight truncate">{item.label}</span>
+              <span className={`text-[10px] sm:text-[11px] mt-0.5 tracking-tight truncate max-w-full ${isActive ? 'text-signa-primary font-semibold' : 'text-signa-muted'}`}>
+                {item.label}
+              </span>
             </button>
           );
         })}
       </div>
     </nav>
   );
+
 };

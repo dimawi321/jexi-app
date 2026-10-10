@@ -15,52 +15,38 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
     function isValidAccountData(data, userId) {
-      return data.accountId == userId
-        && data.userEmail is string
-        && data.userEmail.size() > 0
-        && data.userEmail.size() <= 256
-        && data.version is number
-        && data.schemaVersion is string
-        && data.updatedAt is string
-        && data.recipients is list
-        && data.recipients.size() <= 1000
-        && data.intentions is list
-        && data.intentions.size() <= 1000
-        && data.history is list
-        && data.history.size() <= 10000;
+      return (data.accountId == null || data.accountId == userId)
+        && (data.userEmail == null || (data.userEmail is string && data.userEmail.size() <= 256))
+        && (data.recipients == null || (data.recipients is list && data.recipients.size() <= 1000))
+        && (data.intentions == null || (data.intentions is list && data.intentions.size() <= 1000))
+        && (data.history == null || (data.history is list && data.history.size() <= 10000));
     }
 
     // Isolated per-user JEXI account document
     // Document ID must match authenticated user's UID
     match /users/{userId} {
-      // Unauthenticated users have NO access.
-      // Authenticated users can ONLY read their own document.
-      allow get: if isOwner(userId) && isValidId(userId);
+      // 1. Unauthenticated users cannot read or write
+      // 2. Authenticated users can read ONLY their own /users/{uid} document
+      allow get: if isOwner(userId);
 
       // Listing all user documents in /users is strictly forbidden
       allow list: if false;
 
-      // Create: User can create only their own account document with valid schema
+      // 3. Authenticated users can create ONLY their own /users/{uid} document
       allow create: if isOwner(userId)
-        && isValidId(userId)
         && isValidAccountData(request.resource.data, userId);
 
-      // Update: User can update only their own document.
-      // Invariant 1: accountId cannot be changed
-      // Invariant 2: History is undeletable (history size cannot decrease)
+      // 4. Authenticated users can update ONLY their own /users/{uid} document
+      // 5. Authenticated users cannot update another user's document
+      // Invariant: accountId cannot be changed to another user
       allow update: if isOwner(userId)
-        && isValidId(userId)
         && isValidAccountData(request.resource.data, userId)
-        && request.resource.data.accountId == resource.data.accountId
-        && request.resource.data.history.size() >= resource.data.history.size();
+        && (resource.data.accountId == null || request.resource.data.accountId == resource.data.accountId);
 
-      // Deletions are strictly disallowed to prevent accidental data or history destruction
+      // Deletions are strictly disallowed to prevent accidental data destruction
       allow delete: if false;
     }
   }
 }
+

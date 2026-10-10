@@ -1,8 +1,30 @@
-import { Recipient, PaymentIntention, CompletedTransactionRecord, PreparedTransaction, UserAccount, JexiAccountDataPayload } from '../types';
-import { INITIAL_RECIPIENTS, INITIAL_INTENTIONS } from '../constants';
+import {
+  Recipient,
+  PaymentIntention,
+  CompletedTransactionRecord,
+  PreparedTransaction,
+  UserAccount,
+  SignaAccountDataPayload,
+  JexiAccountDataPayload,
+  TransactionOccurrenceState,
+  PaymentOccurrenceRecord,
+} from '../types';
 import { getAddress } from 'viem';
+import { getFirebaseAuth } from '../lib/firebase';
 
 const KEYS = {
+  RECIPIENTS: 'signa_recipients_v1',
+  INTENTIONS: 'signa_intentions_v1',
+  COMPLETED_TXS: 'signa_completed_txs_v1',
+  PREPARED_TXS: 'signa_prepared_txs_v1',
+  TESTNET_BALANCE: 'signa_testnet_balance_v1',
+  CURRENT_USER: 'signa_current_user_v1',
+  ACCOUNTS_INDEX: 'signa_accounts_index_v1',
+  ACCOUNT_DATA_PREFIX: 'signa_account_data_v1_',
+  OCCURRENCE_STATES: 'signa_occurrence_states_v1',
+};
+
+const LEGACY_KEYS = {
   RECIPIENTS: 'jexi_recipients_v1',
   INTENTIONS: 'jexi_intentions_v1',
   COMPLETED_TXS: 'jexi_completed_txs_v1',
@@ -11,32 +33,80 @@ const KEYS = {
   CURRENT_USER: 'jexi_current_user_v1',
   ACCOUNTS_INDEX: 'jexi_accounts_index_v1',
   ACCOUNT_DATA_PREFIX: 'jexi_account_data_v1_',
+  OCCURRENCE_STATES: 'jexi_occurrence_states_v1',
 };
 
-export interface TestnetWalletBalance {
-  'Test USDC': number;
-  'Test ETH': number;
-  'Test DAI': number;
+function getItemWithFallback(key: string, legacyKey: string): string | null {
+  const item = localStorage.getItem(key);
+  if (item !== null) return item;
+  return localStorage.getItem(legacyKey);
 }
 
-const DEFAULT_BALANCE: TestnetWalletBalance = {
-  'Test USDC': 2500,
-  'Test ETH': 1.45,
-  'Test DAI': 1000,
+export function getAuthenticatedUid(): string | null {
+  try {
+    const auth = getFirebaseAuth();
+    if (auth?.currentUser?.uid) {
+      return auth.currentUser.uid;
+    }
+  } catch {
+    // Auth not initialized yet or not in browser context
+  }
+  try {
+    const raw = localStorage.getItem(KEYS.CURRENT_USER);
+    if (raw) {
+      const user = JSON.parse(raw) as UserAccount;
+      if (user && user.id && user.provider !== 'local') {
+        return user.id;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function getUserKey(baseKey: string): string {
+  const uid = getAuthenticatedUid();
+  if (uid) {
+    return `${baseKey}_${uid}`;
+  }
+  return baseKey;
+}
+
+export interface WalletBalance {
+  USDC: number;
+  ETH: number;
+}
+
+const DEFAULT_BALANCE: WalletBalance = {
+  USDC: 0,
+  ETH: 0,
 };
 
 export function loadRecipients(): Recipient[] {
+  const uid = getAuthenticatedUid();
+  if (!uid) {
+    return [];
+  }
   try {
-    const raw = localStorage.getItem(KEYS.RECIPIENTS);
+    const key = getUserKey(KEYS.RECIPIENTS);
+    const raw = localStorage.getItem(key);
     if (!raw) {
-      saveRecipients(INITIAL_RECIPIENTS);
-      return INITIAL_RECIPIENTS;
+      saveRecipients([]);
+      return [];
     }
     const list: Recipient[] = JSON.parse(raw);
     let modified = false;
 
-    // Normalize addresses to canonical EIP-55 checksum format
     for (const r of list) {
+      if ((r.networkId as string) !== 'base-mainnet') {
+        r.networkId = 'base-mainnet';
+        modified = true;
+      }
+      if (!r.tokenSymbol || r.tokenSymbol.toLowerCase().includes('test')) {
+        r.tokenSymbol = r.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+        modified = true;
+      }
       if (r.address && /^0x[0-9a-fA-F]{40}$/.test(r.address)) {
         try {
           const checksummed = getAddress(r.address);
@@ -50,91 +120,111 @@ export function loadRecipients(): Recipient[] {
       }
     }
 
-    // Audit recipient consistency: ensure Gospel and Coco do not share the same address
-    const gospel = list.find((r) => r.name.toLowerCase().includes('gospel'));
-    const coco = list.find((r) => r.name.toLowerCase().includes('coco'));
-
-    if (gospel && coco && gospel.address.toLowerCase() === coco.address.toLowerCase()) {
-      coco.address = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
-      modified = true;
-    }
-
-    // Ensure all demo recipients are present if user has old local cache
-    for (const initRec of INITIAL_RECIPIENTS) {
-      if (!list.some((r) => r.id === initRec.id || r.name.toLowerCase() === initRec.name.toLowerCase())) {
-        list.push(initRec);
-        modified = true;
-      }
-    }
-
     if (modified) {
       saveRecipients(list);
     }
     return list;
   } catch (e) {
     console.error('Failed to load recipients from storage:', e);
-    return INITIAL_RECIPIENTS;
+    return [];
   }
 }
 
 export function saveRecipients(recipients: Recipient[]): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
   try {
-    localStorage.setItem(KEYS.RECIPIENTS, JSON.stringify(recipients));
+    for (const r of recipients) {
+      r.networkId = 'base-mainnet';
+      if (!r.tokenSymbol || r.tokenSymbol.toLowerCase().includes('test')) {
+        r.tokenSymbol = r.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+      }
+    }
+    const key = getUserKey(KEYS.RECIPIENTS);
+    localStorage.setItem(key, JSON.stringify(recipients));
   } catch (e) {
     console.error('Failed to save recipients:', e);
   }
 }
 
 export function loadIntentions(): PaymentIntention[] {
+  const uid = getAuthenticatedUid();
+  if (!uid) {
+    return [];
+  }
   try {
-    const raw = localStorage.getItem(KEYS.INTENTIONS);
+    const key = getUserKey(KEYS.INTENTIONS);
+    const raw = localStorage.getItem(key);
     if (!raw) {
-      saveIntentions(INITIAL_INTENTIONS);
-      return INITIAL_INTENTIONS;
+      saveIntentions([]);
+      return [];
     }
-    return JSON.parse(raw);
+    const list: PaymentIntention[] = JSON.parse(raw);
+    let modified = false;
+    for (const i of list) {
+      if ((i.networkId as string) !== 'base-mainnet') {
+        i.networkId = 'base-mainnet';
+        modified = true;
+      }
+      if (!i.tokenSymbol || i.tokenSymbol.toLowerCase().includes('test')) {
+        i.tokenSymbol = i.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+        modified = true;
+      }
+    }
+    if (modified) {
+      saveIntentions(list);
+    }
+    return list;
   } catch (e) {
     console.error('Failed to load intentions from storage:', e);
-    return INITIAL_INTENTIONS;
+    return [];
   }
 }
 
 export function saveIntentions(intentions: PaymentIntention[]): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
   try {
-    localStorage.setItem(KEYS.INTENTIONS, JSON.stringify(intentions));
+    for (const i of intentions) {
+      i.networkId = 'base-mainnet';
+      if (!i.tokenSymbol || i.tokenSymbol.toLowerCase().includes('test')) {
+        i.tokenSymbol = i.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+      }
+    }
+    const key = getUserKey(KEYS.INTENTIONS);
+    localStorage.setItem(key, JSON.stringify(intentions));
   } catch (e) {
     console.error('Failed to save intentions:', e);
   }
 }
 
 export function loadCompletedTransactions(): CompletedTransactionRecord[] {
+  const uid = getAuthenticatedUid();
+  if (!uid) {
+    return [];
+  }
   try {
-    const raw = localStorage.getItem(KEYS.COMPLETED_TXS);
+    const key = getUserKey(KEYS.COMPLETED_TXS);
+    const raw = localStorage.getItem(key);
     if (!raw) {
-      const initialHistory: CompletedTransactionRecord[] = [
-        {
-          id: 'hist_init_1',
-          preparedTxId: 'prep_mock_0',
-          intentionId: 'intent_1',
-          recipientId: 'rec_mum_1',
-          recipientName: 'Mum',
-          recipientAddress: '0x71C63B57493F5605d8c1c4f514C4FaC7AcFfe7e3',
-          amount: 50,
-          tokenSymbol: 'Test USDC',
-          networkId: 'base-sepolia',
-          txHash: 'SIM-BASE-SEP-7d2948ca7210',
-          simulatedRefId: 'SIM-BASE-SEP-7d2948ca7210',
-          confirmedAt: '2026-07-25T14:22:10Z',
-          executionMode: 'DEVELOPMENT_TESTNET_SIMULATION',
-          isSimulation: true,
-          isOnChain: false,
-        },
-      ];
-      saveCompletedTransactions(initialHistory);
-      return initialHistory;
+      saveCompletedTransactions([]);
+      return [];
     }
     const list: CompletedTransactionRecord[] = JSON.parse(raw);
-    // Ensure all simulation records are explicitly tagged as not on-chain
+    let modified = false;
+    for (const tx of list) {
+      if ((tx.networkId as string) !== 'base-mainnet') {
+        tx.networkId = 'base-mainnet';
+        modified = true;
+      }
+      if (!tx.tokenSymbol || tx.tokenSymbol.toLowerCase().includes('test')) {
+        tx.tokenSymbol = tx.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+        modified = true;
+      }
+    }
+    if (modified) {
+      saveCompletedTransactions(list);
+    }
     return list.map((record) => ({
       ...record,
       isOnChain: record.isOnChain ?? (record.isSimulation ? false : true),
@@ -147,33 +237,121 @@ export function loadCompletedTransactions(): CompletedTransactionRecord[] {
 }
 
 export function saveCompletedTransactions(txs: CompletedTransactionRecord[]): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
   try {
-    localStorage.setItem(KEYS.COMPLETED_TXS, JSON.stringify(txs));
+    for (const tx of txs) {
+      tx.networkId = 'base-mainnet';
+      if (!tx.tokenSymbol || tx.tokenSymbol.toLowerCase().includes('test')) {
+        tx.tokenSymbol = tx.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC';
+      }
+    }
+    const key = getUserKey(KEYS.COMPLETED_TXS);
+    localStorage.setItem(key, JSON.stringify(txs));
   } catch (e) {
     console.error('Failed to save completed transactions:', e);
   }
 }
 
-export function loadTestnetBalance(): TestnetWalletBalance {
+export function loadOccurrenceRecords(): Record<string, PaymentOccurrenceRecord> {
+  const uid = getAuthenticatedUid();
+  if (!uid) return {};
   try {
-    const raw = localStorage.getItem(KEYS.TESTNET_BALANCE);
+    const key = getUserKey(KEYS.OCCURRENCE_STATES);
+    const legacyKey = getUserKey(LEGACY_KEYS.OCCURRENCE_STATES);
+    const raw = getItemWithFallback(key, legacyKey);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveOccurrenceRecords(records: Record<string, PaymentOccurrenceRecord>): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
+  try {
+    const key = getUserKey(KEYS.OCCURRENCE_STATES);
+    localStorage.setItem(key, JSON.stringify(records));
+  } catch (e) {
+    console.error('Failed to save occurrence records:', e);
+  }
+}
+
+export function getOccurrenceRecord(occurrenceId: string): PaymentOccurrenceRecord | null {
+  const records = loadOccurrenceRecords();
+  return records[occurrenceId] || null;
+}
+
+export function deleteOccurrenceRecord(occurrenceId: string): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
+  try {
+    const records = loadOccurrenceRecords();
+    if (records[occurrenceId]) {
+      delete records[occurrenceId];
+      saveOccurrenceRecords(records);
+    }
+  } catch (e) {
+    console.error('Failed to delete occurrence record:', e);
+  }
+}
+
+export function setOccurrenceState(
+  occurrenceId: string,
+  intentionId: string,
+  dueDate: string,
+  state: TransactionOccurrenceState,
+  extra?: { txHash?: string; blockNumber?: number; error?: string; signingMethod?: string }
+): PaymentOccurrenceRecord {
+  const records = loadOccurrenceRecords();
+  const existing = records[occurrenceId];
+
+  const updated: PaymentOccurrenceRecord = {
+    occurrenceId,
+    intentionId,
+    dueDate,
+    state,
+    updatedAt: new Date().toISOString(),
+    txHash: extra?.txHash || existing?.txHash,
+    blockNumber: extra?.blockNumber ?? existing?.blockNumber,
+    error: extra?.error || existing?.error,
+    signingMethod: extra?.signingMethod || existing?.signingMethod,
+  };
+
+  records[occurrenceId] = updated;
+  saveOccurrenceRecords(records);
+  return updated;
+}
+
+export function loadStoredWalletBalance(): WalletBalance {
+  const uid = getAuthenticatedUid();
+  if (!uid) return DEFAULT_BALANCE;
+  try {
+    const key = getUserKey(KEYS.TESTNET_BALANCE);
+    const raw = localStorage.getItem(key);
     if (!raw) {
-      localStorage.setItem(KEYS.TESTNET_BALANCE, JSON.stringify(DEFAULT_BALANCE));
       return DEFAULT_BALANCE;
     }
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return {
+      USDC: typeof parsed?.USDC === 'number' ? parsed.USDC : 0,
+      ETH: typeof parsed?.ETH === 'number' ? parsed.ETH : 0,
+    };
   } catch (e) {
     return DEFAULT_BALANCE;
   }
 }
 
-export function deductTestnetBalance(tokenSymbol: string, amount: number): void {
+export function deductStoredWalletBalance(tokenSymbol: string, amount: number): void {
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
   try {
-    const current = loadTestnetBalance();
-    const key = tokenSymbol as keyof TestnetWalletBalance;
-    if (current[key] !== undefined) {
-      current[key] = Math.max(0, current[key] - amount);
-      localStorage.setItem(KEYS.TESTNET_BALANCE, JSON.stringify(current));
+    const key = getUserKey(KEYS.TESTNET_BALANCE);
+    const current = loadStoredWalletBalance();
+    const cleanSymbol = (tokenSymbol || 'USDC').replace(/^Test\s+/i, '') as keyof WalletBalance;
+    if (current[cleanSymbol] !== undefined) {
+      current[cleanSymbol] = Math.max(0, current[cleanSymbol] - amount);
+      localStorage.setItem(key, JSON.stringify(current));
     }
   } catch (e) {
     console.error('Failed to deduct balance:', e);
@@ -181,29 +359,13 @@ export function deductTestnetBalance(tokenSymbol: string, amount: number): void 
 }
 
 export function resetAllToDemo(): void {
-  saveRecipients(INITIAL_RECIPIENTS);
-  saveIntentions(INITIAL_INTENTIONS);
-  localStorage.setItem(KEYS.TESTNET_BALANCE, JSON.stringify(DEFAULT_BALANCE));
-  const initialHistory: CompletedTransactionRecord[] = [
-    {
-      id: 'hist_init_1',
-      preparedTxId: 'prep_mock_0',
-      intentionId: 'intent_1',
-      recipientId: 'rec_mum_1',
-      recipientName: 'Mum',
-      recipientAddress: '0x71C63B57493F5605d8c1c4f514C4FaC7AcFfe7e3',
-      amount: 50,
-      tokenSymbol: 'Test USDC',
-      networkId: 'base-sepolia',
-      txHash: 'SIM-BASE-SEP-7d2948ca7210',
-      simulatedRefId: 'SIM-BASE-SEP-7d2948ca7210',
-      confirmedAt: '2026-07-25T14:22:10Z',
-      executionMode: 'DEVELOPMENT_TESTNET_SIMULATION',
-      isSimulation: true,
-      isOnChain: false,
-    },
-  ];
-  saveCompletedTransactions(initialHistory);
+  const uid = getAuthenticatedUid();
+  if (!uid) return;
+  saveRecipients([]);
+  saveIntentions([]);
+  const key = getUserKey(KEYS.TESTNET_BALANCE);
+  localStorage.setItem(key, JSON.stringify(DEFAULT_BALANCE));
+  saveCompletedTransactions([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +421,7 @@ export function getStoredAccountPayload(accountId: string): JexiAccountDataPaylo
 
 export function saveCurrentStateToAccount(accountId: string, userEmail: string): void {
   try {
-    const payload: JexiAccountDataPayload = {
+    const payload: SignaAccountDataPayload = {
       version: 1,
       schemaVersion: '1.0',
       accountId,
@@ -269,9 +431,9 @@ export function saveCurrentStateToAccount(accountId: string, userEmail: string):
       recipients: loadRecipients(),
       intentions: loadIntentions(),
       history: loadCompletedTransactions(),
-      balance: loadTestnetBalance(),
+      balance: loadStoredWalletBalance(),
       metadata: {
-        client: 'JEXI Self-Custody Web',
+        client: 'SIGNA Self-Custody Web',
         deviceSyncReady: true,
       },
     };
@@ -283,27 +445,21 @@ export function saveCurrentStateToAccount(accountId: string, userEmail: string):
 
 export function applyPayloadToActiveStorage(payload: JexiAccountDataPayload): void {
   if (Array.isArray(payload.recipients)) {
-    localStorage.setItem(KEYS.RECIPIENTS, JSON.stringify(payload.recipients));
+    saveRecipients(payload.recipients);
   }
   if (Array.isArray(payload.intentions)) {
-    localStorage.setItem(KEYS.INTENTIONS, JSON.stringify(payload.intentions));
+    saveIntentions(payload.intentions);
   }
   if (Array.isArray(payload.history)) {
-    // Preserve existing history items - history must never be lost
-    const current = loadCompletedTransactions();
-    const existingIds = new Set(current.map((h) => h.id || h.txHash));
-    const merged = [...current];
-    for (const item of payload.history) {
-      const key = item.id || item.txHash;
-      if (!existingIds.has(key)) {
-        merged.push(item);
-        existingIds.add(key);
-      }
-    }
-    localStorage.setItem(KEYS.COMPLETED_TXS, JSON.stringify(merged));
+    saveCompletedTransactions(payload.history);
   }
   if (payload.balance) {
-    localStorage.setItem(KEYS.TESTNET_BALANCE, JSON.stringify(payload.balance));
+    const key = getUserKey(KEYS.TESTNET_BALANCE);
+    try {
+      localStorage.setItem(key, JSON.stringify(payload.balance));
+    } catch (e) {
+      console.error('Failed to save balance to storage:', e);
+    }
   }
 }
 
@@ -348,7 +504,24 @@ export function signInOrCreateAccount(
   if (existingSnapshot) {
     applyPayloadToActiveStorage(existingSnapshot);
   } else {
-    // Preserve all current active data into this account's snapshot
+    // Brand new user: initialize empty dataset isolated to this user's account
+    const emptyPayload: SignaAccountDataPayload = {
+      version: 1,
+      schemaVersion: '1.0',
+      accountId: user.id,
+      userEmail: user.email,
+      exportedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      recipients: [],
+      intentions: [],
+      history: [],
+      balance: DEFAULT_BALANCE,
+      metadata: {
+        client: 'SIGNA Self-Custody Web',
+        deviceSyncReady: true,
+      },
+    };
+    applyPayloadToActiveStorage(emptyPayload);
     saveCurrentStateToAccount(user.id, user.email);
   }
 
@@ -383,7 +556,24 @@ export function attachFirebaseAuthUser(user: UserAccount): void {
   if (existingSnapshot) {
     applyPayloadToActiveStorage(existingSnapshot);
   } else {
-    // Non-destructively preserve current active data into this account's snapshot
+    // Brand new authenticated user: start with an empty dataset isolated to their Firebase UID
+    const emptyPayload: SignaAccountDataPayload = {
+      version: 1,
+      schemaVersion: '1.0',
+      accountId: user.id,
+      userEmail: user.email,
+      exportedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      recipients: [],
+      intentions: [],
+      history: [],
+      balance: DEFAULT_BALANCE,
+      metadata: {
+        client: 'SIGNA Self-Custody Web',
+        deviceSyncReady: true,
+      },
+    };
+    applyPayloadToActiveStorage(emptyPayload);
     saveCurrentStateToAccount(user.id, user.email);
   }
 }
@@ -396,30 +586,35 @@ export function logoutUser(): void {
   saveCurrentUser(null);
 }
 
-export function exportJexiAccountPayload(): JexiAccountDataPayload {
+export function exportSignaAccountPayload(): SignaAccountDataPayload {
   const user = getCurrentUser();
+  const uid = getAuthenticatedUid();
   return {
     version: 1,
     schemaVersion: '1.0',
-    accountId: user?.id || 'guest_local',
-    userEmail: user?.email || 'local_session@jexi.internal',
+    accountId: uid || user?.id || 'guest_local',
+    userEmail: user?.email || 'local_session@signa.internal',
     exportedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     recipients: loadRecipients(),
     intentions: loadIntentions(),
     history: loadCompletedTransactions(),
-    balance: loadTestnetBalance(),
+    balance: loadStoredWalletBalance(),
     metadata: {
-      client: 'JEXI Self-Custody Web',
+      client: 'SIGNA Self-Custody Web',
       deviceSyncReady: true,
     },
   };
 }
 
-export function importJexiAccountPayload(payload: JexiAccountDataPayload): { success: boolean; message: string } {
+export function exportJexiAccountPayload(): SignaAccountDataPayload {
+  return exportSignaAccountPayload();
+}
+
+export function importSignaAccountPayload(payload: SignaAccountDataPayload): { success: boolean; message: string } {
   try {
     if (!payload || !Array.isArray(payload.recipients) || !Array.isArray(payload.intentions)) {
-      return { success: false, message: 'Invalid JEXI sync payload structure.' };
+      return { success: false, message: 'Invalid SIGNA sync payload structure.' };
     }
 
     applyPayloadToActiveStorage(payload);
@@ -433,4 +628,8 @@ export function importJexiAccountPayload(payload: JexiAccountDataPayload): { suc
   } catch (e: any) {
     return { success: false, message: e?.message || 'Failed to restore device payload.' };
   }
+}
+
+export function importJexiAccountPayload(payload: SignaAccountDataPayload): { success: boolean; message: string } {
+  return importSignaAccountPayload(payload);
 }

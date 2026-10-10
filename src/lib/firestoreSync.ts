@@ -7,13 +7,13 @@ import {
 } from './firebase';
 import {
   UserAccount,
-  JexiAccountDataPayload,
+  SignaAccountDataPayload,
   Recipient,
   PaymentIntention,
   CompletedTransactionRecord,
 } from '../types';
 import {
-  exportJexiAccountPayload,
+  exportSignaAccountPayload,
   applyPayloadToActiveStorage,
   saveCurrentStateToAccount,
 } from '../storage/storage';
@@ -74,50 +74,265 @@ function notifySyncStatus(status: SyncStatus, errorMsg?: string) {
  * - Balances: preserved from cloud (or latest transaction).
  */
 export function mergeLocalAndCloudPayload(
-  localPayload: JexiAccountDataPayload,
-  cloudPayload: JexiAccountDataPayload
-): JexiAccountDataPayload {
+  localPayload: SignaAccountDataPayload,
+  cloudPayload: SignaAccountDataPayload
+): SignaAccountDataPayload {
   // 1. Merge Recipients by id
   const recipientMap = new Map<string, Recipient>();
   for (const rec of localPayload.recipients || []) {
-    recipientMap.set(rec.id, rec);
+    recipientMap.set(rec.id, {
+      ...rec,
+      networkId: 'base-mainnet',
+      tokenSymbol: rec.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC',
+    });
   }
   for (const rec of cloudPayload.recipients || []) {
-    recipientMap.set(rec.id, rec);
+    recipientMap.set(rec.id, {
+      ...rec,
+      networkId: 'base-mainnet',
+      tokenSymbol: rec.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC',
+    });
   }
   const mergedRecipients = Array.from(recipientMap.values());
 
-  // 2. Merge Intentions by id
+  // 2. Undeletable History: complete union of all unique completed transactions with conflict resolution
+  function resolveHistoryRecordConflict(
+    existing: CompletedTransactionRecord,
+    incoming: CompletedTransactionRecord
+  ): CompletedTransactionRecord {
+    const isExistingConfirmed = existing.status === 'CONFIRMED_ON_CHAIN';
+    const isIncomingConfirmed = incoming.status === 'CONFIRMED_ON_CHAIN';
+    const isExistingFailed = existing.status === 'FAILED_ON_CHAIN';
+    const isIncomingFailed = incoming.status === 'FAILED_ON_CHAIN';
+    const isExistingPending = existing.status === 'BROADCAST_SUBMITTED' || (!existing.status && !existing.isSimulation);
+    const isIncomingPending = incoming.status === 'BROADCAST_SUBMITTED' || (!incoming.status && !incoming.isSimulation);
+
+    // Rule 1: A terminal on-chain receipt outcome (CONFIRMED_ON_CHAIN or FAILED_ON_CHAIN)
+    // MUST NEVER be overwritten by an older BROADCAST_SUBMITTED (pending) record!
+    if ((isExistingConfirmed || isExistingFailed) && isIncomingPending) {
+      return {
+        ...incoming,
+        ...existing,
+        blockNumber: existing.blockNumber ?? incoming.blockNumber,
+        occurrenceId: existing.occurrenceId || incoming.occurrenceId,
+      };
+    }
+    if ((isIncomingConfirmed || isIncomingFailed) && isExistingPending) {
+      return {
+        ...existing,
+        ...incoming,
+        blockNumber: incoming.blockNumber ?? existing.blockNumber,
+        occurrenceId: incoming.occurrenceId || existing.occurrenceId,
+      };
+    }
+
+    // Rule 2: Both are CONFIRMED_ON_CHAIN or both FAILED_ON_CHAIN or both BROADCAST_SUBMITTED
+    if (existing.status === incoming.status) {
+      return {
+        ...existing,
+        ...incoming,
+        blockNumber: incoming.blockNumber ?? existing.blockNumber,
+        occurrenceId: incoming.occurrenceId || existing.occurrenceId,
+        confirmedAt: existing.confirmedAt || incoming.confirmedAt,
+      };
+    }
+
+    // Rule 3: Conflict between CONFIRMED_ON_CHAIN and FAILED_ON_CHAIN for the same txHash
+    // Prefer the record with verified blockNumber; if conflict remains unresolved, preserve confirmed record.
+    if (isExistingConfirmed && isIncomingFailed) {
+      if (existing.blockNumber && !incoming.blockNumber) {
+        return existing;
+      }
+      if (incoming.blockNumber && !existing.blockNumber) {
+        return incoming;
+      }
+      console.warn(`[SIGNA Sync] Terminal status conflict for tx ${existing.txHash}: CONFIRMED vs FAILED. Preserving confirmed record.`);
+      return existing;
+    }
+    if (isIncomingConfirmed && isExistingFailed) {
+      if (incoming.blockNumber && !existing.blockNumber) {
+        return incoming;
+      }
+      if (existing.blockNumber && !incoming.blockNumber) {
+        return existing;
+      }
+      console.warn(`[SIGNA Sync] Terminal status conflict for tx ${incoming.txHash}: FAILED vs CONFIRMED. Preserving confirmed record.`);
+      return incoming;
+    }
+
+    return {
+      ...existing,
+      ...incoming,
+      blockNumber: incoming.blockNumber ?? existing.blockNumber,
+      occurrenceId: incoming.occurrenceId || existing.occurrenceId,
+    };
+  }
+
+  const mergedHistoryList: CompletedTransactionRecord[] = [];
+  const txHashToIndex = new Map<string, number>();
+  const occurrenceIdToIndex = new Map<string, number>();
+  const idToIndex = new Map<string, number>();
+
+  const processHistoryItem = (h: CompletedTransactionRecord) => {
+    const normalized: CompletedTransactionRecord = {
+      ...h,
+      networkId: 'base-mainnet',
+      tokenSymbol: h.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC',
+    };
+
+    let existingIdx: number | undefined;
+    const lowerTxHash =
+      normalized.txHash && normalized.txHash.startsWith('0x')
+        ? normalized.txHash.toLowerCase()
+        : null;
+
+    if (lowerTxHash && txHashToIndex.has(lowerTxHash)) {
+      existingIdx = txHashToIndex.get(lowerTxHash);
+    } else if (normalized.occurrenceId && occurrenceIdToIndex.has(normalized.occurrenceId)) {
+      existingIdx = occurrenceIdToIndex.get(normalized.occurrenceId);
+    } else if (normalized.id && idToIndex.has(normalized.id)) {
+      existingIdx = idToIndex.get(normalized.id);
+    }
+
+    if (existingIdx !== undefined) {
+      const merged = resolveHistoryRecordConflict(mergedHistoryList[existingIdx], normalized);
+      mergedHistoryList[existingIdx] = merged;
+      if (lowerTxHash) txHashToIndex.set(lowerTxHash, existingIdx);
+      if (merged.occurrenceId) occurrenceIdToIndex.set(merged.occurrenceId, existingIdx);
+      if (merged.id) idToIndex.set(merged.id, existingIdx);
+    } else {
+      const newIdx = mergedHistoryList.length;
+      mergedHistoryList.push(normalized);
+      if (lowerTxHash) txHashToIndex.set(lowerTxHash, newIdx);
+      if (normalized.occurrenceId) occurrenceIdToIndex.set(normalized.occurrenceId, newIdx);
+      if (normalized.id) idToIndex.set(normalized.id, newIdx);
+    }
+  };
+
+  for (const h of localPayload.history || []) {
+    processHistoryItem(h);
+  }
+  for (const h of cloudPayload.history || []) {
+    processHistoryItem(h);
+  }
+
+  const mergedHistory = mergedHistoryList.sort(
+    (a, b) => new Date(b.confirmedAt).getTime() - new Date(a.confirmedAt).getTime()
+  );
+
+  const completedIntentionIdsInHistory = new Set(
+    mergedHistory
+      .filter((h) => h.status === 'CONFIRMED_ON_CHAIN' || (h.isSimulation && h.status !== 'FAILED_ON_CHAIN'))
+      .map((h) => h.intentionId)
+      .filter(Boolean)
+  );
+
+  // 3. Merge Intentions by id with Terminal One-Time Completion Protection
   const intentionMap = new Map<string, PaymentIntention>();
   for (const intent of localPayload.intentions || []) {
-    intentionMap.set(intent.id, intent);
+    intentionMap.set(intent.id, {
+      ...intent,
+      networkId: 'base-mainnet',
+      tokenSymbol: intent.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC',
+    });
   }
   for (const intent of cloudPayload.intentions || []) {
-    // If present in both, keep the intention with latest timestamp
-    const existing = intentionMap.get(intent.id);
+    const normalizedCloudIntent: PaymentIntention = {
+      ...intent,
+      networkId: 'base-mainnet',
+      tokenSymbol: intent.tokenSymbol?.toLowerCase().includes('eth') ? 'ETH' : 'USDC',
+    };
+    const existing = intentionMap.get(normalizedCloudIntent.id);
     if (existing) {
-      const existingTime = new Date(existing.lastCheckedAt || existing.createdAt).getTime();
-      const cloudTime = new Date(intent.lastCheckedAt || intent.createdAt).getTime();
-      intentionMap.set(intent.id, cloudTime >= existingTime ? intent : existing);
+      // Check if either copy is completed
+      const isLocallyCompleted =
+        existing.isCompleted ||
+        (existing.frequency === 'once' && (!!existing.completedAt || completedIntentionIdsInHistory.has(existing.id)));
+      const isCloudCompleted =
+        normalizedCloudIntent.isCompleted ||
+        (normalizedCloudIntent.frequency === 'once' && (!!normalizedCloudIntent.completedAt || completedIntentionIdsInHistory.has(normalizedCloudIntent.id)));
+
+      // Check if either copy is rejected (terminal invariant for one-time intentions)
+      const isLocallyRejected =
+        existing.isRejected ||
+        (existing.frequency === 'once' && (!!existing.rejectedAt || existing.isRejected));
+      const isCloudRejected =
+        normalizedCloudIntent.isRejected ||
+        (normalizedCloudIntent.frequency === 'once' && (!!normalizedCloudIntent.rejectedAt || normalizedCloudIntent.isRejected));
+
+      if (isLocallyCompleted || isCloudCompleted) {
+        // Terminal invariant: once completed, a one-time intention can never be reverted to active or paused
+        const completedSource = isLocallyCompleted ? existing : normalizedCloudIntent;
+        const otherSource = isLocallyCompleted ? normalizedCloudIntent : existing;
+        const completionTime =
+          completedSource.completedAt ||
+          otherSource.completedAt ||
+          mergedHistory.find((h) => h.intentionId === normalizedCloudIntent.id)?.confirmedAt ||
+          new Date().toISOString();
+
+        intentionMap.set(normalizedCloudIntent.id, {
+          ...otherSource,
+          ...completedSource,
+          networkId: 'base-mainnet',
+          tokenSymbol: completedSource.tokenSymbol || 'USDC',
+          active: false,
+          isCompleted: true,
+          completedAt: completionTime,
+        });
+      } else if (isLocallyRejected || isCloudRejected) {
+        // Terminal invariant: once rejected, a one-time intention can never be reverted to active or paused
+        const rejectedSource = isLocallyRejected ? existing : normalizedCloudIntent;
+        const otherSource = isLocallyRejected ? normalizedCloudIntent : existing;
+        const rejectTime =
+          rejectedSource.rejectedAt ||
+          otherSource.rejectedAt ||
+          new Date().toISOString();
+
+        intentionMap.set(normalizedCloudIntent.id, {
+          ...otherSource,
+          ...rejectedSource,
+          networkId: 'base-mainnet',
+          tokenSymbol: rejectedSource.tokenSymbol || 'USDC',
+          active: false,
+          isRejected: true,
+          rejectedAt: rejectTime,
+        });
+      } else {
+        // Schedule Monotonicity Guarantee: nextDueDate must NEVER roll backwards
+        const maxNextDueDate =
+          existing.nextDueDate && normalizedCloudIntent.nextDueDate
+            ? (existing.nextDueDate > normalizedCloudIntent.nextDueDate ? existing.nextDueDate : normalizedCloudIntent.nextDueDate)
+            : existing.nextDueDate || normalizedCloudIntent.nextDueDate;
+
+        const existingTime = new Date(existing.lastCheckedAt || existing.createdAt).getTime();
+        const cloudTime = new Date(normalizedCloudIntent.lastCheckedAt || normalizedCloudIntent.createdAt).getTime();
+        const chosen = cloudTime >= existingTime ? normalizedCloudIntent : existing;
+
+        intentionMap.set(normalizedCloudIntent.id, {
+          ...chosen,
+          nextDueDate: maxNextDueDate,
+        });
+      }
     } else {
-      intentionMap.set(intent.id, intent);
+      intentionMap.set(normalizedCloudIntent.id, normalizedCloudIntent);
+    }
+  }
+
+  // Final check: any one-time intention with a matching record in history must be marked completed
+  for (const [id, intent] of intentionMap.entries()) {
+    if (intent.frequency === 'once' && completedIntentionIdsInHistory.has(id) && !intent.isCompleted) {
+      intentionMap.set(id, {
+        ...intent,
+        active: false,
+        isCompleted: true,
+        completedAt:
+          intent.completedAt ||
+          mergedHistory.find((h) => h.intentionId === id)?.confirmedAt ||
+          new Date().toISOString(),
+      });
     }
   }
   const mergedIntentions = Array.from(intentionMap.values());
-
-  // 3. Undeletable History: complete union of all unique completed transactions
-  const historyMap = new Map<string, CompletedTransactionRecord>();
-  for (const h of localPayload.history || []) {
-    const key = h.id || h.txHash || `${h.intentionId}_${h.confirmedAt}`;
-    historyMap.set(key, h);
-  }
-  for (const h of cloudPayload.history || []) {
-    const key = h.id || h.txHash || `${h.intentionId}_${h.confirmedAt}`;
-    historyMap.set(key, h);
-  }
-  const mergedHistory = Array.from(historyMap.values()).sort(
-    (a, b) => new Date(b.confirmedAt).getTime() - new Date(a.confirmedAt).getTime()
-  );
 
   // 4. Balances: prefer cloud if present, else local
   const balance = cloudPayload.balance || localPayload.balance;
@@ -134,7 +349,7 @@ export function mergeLocalAndCloudPayload(
     history: mergedHistory,
     balance,
     metadata: {
-      client: 'JEXI Self-Custody Web',
+      client: 'SIGNA Self-Custody Web',
       deviceSyncReady: true,
       lastSyncedAt: new Date().toISOString(),
     },
@@ -145,7 +360,7 @@ export function mergeLocalAndCloudPayload(
  * Fetches the user's isolated account data document from Firestore.
  * Strictly scoped to `/users/${userId}` where userId === request.auth.uid.
  */
-export async function fetchUserCloudData(userId: string): Promise<JexiAccountDataPayload | null> {
+export async function fetchUserCloudData(userId: string): Promise<SignaAccountDataPayload | null> {
   const db = getFirebaseFirestore();
   if (!db) {
     return null;
@@ -160,7 +375,7 @@ export async function fetchUserCloudData(userId: string): Promise<JexiAccountDat
       return null;
     }
 
-    const data = snap.data() as JexiAccountDataPayload;
+    const data = snap.data() as SignaAccountDataPayload;
     return data;
   } catch (error: any) {
     if (error?.code === 'permission-denied' || error?.message?.includes('permission')) {
@@ -177,7 +392,7 @@ export async function fetchUserCloudData(userId: string): Promise<JexiAccountDat
  */
 export async function saveUserCloudData(
   userId: string,
-  payload: JexiAccountDataPayload
+  payload: SignaAccountDataPayload
 ): Promise<void> {
   const db = getFirebaseFirestore();
   if (!db) {
@@ -214,11 +429,19 @@ export async function loadAndApplyCloudData(
 
   try {
     const cloudPayload = await fetchUserCloudData(user.id);
-    const localPayload = exportJexiAccountPayload();
+    const localPayload = exportSignaAccountPayload();
 
     if (cloudPayload) {
-      // Merge cloud and local data safely
-      const merged = mergeLocalAndCloudPayload(localPayload, cloudPayload);
+      // Validate that cloud payload strictly belongs to this authenticated user
+      if (cloudPayload.accountId && cloudPayload.accountId !== user.id) {
+        throw new Error('Cloud data account ID mismatch with authenticated UID');
+      }
+
+      // Merge only if localPayload also belongs to this user. Otherwise strictly use cloudPayload.
+      const isLocalUserOwned = localPayload.accountId === user.id;
+      const merged = isLocalUserOwned
+        ? mergeLocalAndCloudPayload(localPayload, cloudPayload)
+        : cloudPayload;
 
       // Apply to active local storage
       applyPayloadToActiveStorage(merged);
@@ -226,8 +449,9 @@ export async function loadAndApplyCloudData(
 
       // If local had newer items (like history), update cloud
       if (
-        (localPayload.history && localPayload.history.length > cloudPayload.history.length) ||
-        (localPayload.recipients && localPayload.recipients.length > cloudPayload.recipients.length)
+        isLocalUserOwned &&
+        ((localPayload.history && localPayload.history.length > cloudPayload.history.length) ||
+          (localPayload.recipients && localPayload.recipients.length > cloudPayload.recipients.length))
       ) {
         await saveUserCloudData(user.id, merged);
       }
@@ -235,20 +459,34 @@ export async function loadAndApplyCloudData(
       notifySyncStatus('synced');
       return { success: true, dataLoaded: true };
     } else {
-      // First time this user signs in: upload current local state to cloud
-      const initialCloudPayload: JexiAccountDataPayload = {
-        ...localPayload,
+      // First time this user signs in: initialize empty isolated dataset for this authenticated UID
+      const isLocalUserOwned = localPayload.accountId === user.id;
+      const initialCloudPayload: SignaAccountDataPayload = {
+        version: 1,
+        schemaVersion: '1.0',
         accountId: user.id,
         userEmail: user.email,
+        exportedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        recipients: isLocalUserOwned ? (localPayload.recipients || []) : [],
+        intentions: isLocalUserOwned ? (localPayload.intentions || []) : [],
+        history: isLocalUserOwned ? (localPayload.history || []) : [],
+        balance: isLocalUserOwned ? (localPayload.balance || {
+          USDC: 0,
+          ETH: 0,
+        }) : {
+          USDC: 0,
+          ETH: 0,
+        },
         metadata: {
-          client: 'JEXI Self-Custody Web',
+          client: 'SIGNA Self-Custody Web',
           deviceSyncReady: true,
           lastSyncedAt: new Date().toISOString(),
         },
       };
 
       await saveUserCloudData(user.id, initialCloudPayload);
+      applyPayloadToActiveStorage(initialCloudPayload);
       saveCurrentStateToAccount(user.id, user.email);
       notifySyncStatus('synced');
       return { success: true, dataLoaded: true };
@@ -288,14 +526,14 @@ export function syncAccountToCloud(
 
     notifySyncStatus('syncing');
     try {
-      const localPayload = exportJexiAccountPayload();
-      const payloadToSave: JexiAccountDataPayload = {
+      const localPayload = exportSignaAccountPayload();
+      const payloadToSave: SignaAccountDataPayload = {
         ...localPayload,
         accountId: user.id,
         userEmail: user.email,
         updatedAt: new Date().toISOString(),
         metadata: {
-          client: 'JEXI Self-Custody Web',
+          client: 'SIGNA Self-Custody Web',
           deviceSyncReady: true,
           lastSyncedAt: new Date().toISOString(),
         },

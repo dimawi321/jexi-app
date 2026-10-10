@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ShieldAlert,
   ShieldCheck,
@@ -13,30 +13,47 @@ import {
   AlertTriangle,
   Code2,
   Sparkles,
+  Wallet,
+  Loader2,
+  RefreshCw,
+  X,
+  Clock,
+  Shield,
+  Key,
 } from 'lucide-react';
-import { PreparedTransaction, PaymentIntention, Recipient, CompletedTransactionRecord } from '../types';
+import { PreparedTransaction, PaymentIntention, Recipient, CompletedTransactionRecord, TransactionOccurrenceState } from '../types';
 import { PreflightReportView } from './PreflightBadge';
-import { generateSimulatedTxHash } from '../utils/preflight';
-import { advanceNextDueDate } from '../utils/scheduler';
-import { SUPPORTED_NETWORKS } from '../constants';
+import { generateSimulatedTxHash, verifyTransactionIntegrity, runPreflightChecks } from '../utils/preflight';
+import { advanceNextDueDate, getOccurrenceId } from '../utils/scheduler';
+import { SUPPORTED_NETWORKS, SUPPORTED_TOKENS, formatTokenSymbol, BASE_MAINNET_CHAIN_ID } from '../constants';
+import { WalletState, sendEIP1193Transaction, checkTransactionReceipt, TransactionLifecycleStatus, switchToBaseMainnet } from '../lib/wallet';
+import { ConnectedWalletBalance } from '../lib/balance';
+import { getOccurrenceRecord, setOccurrenceState, deleteOccurrenceRecord, loadCompletedTransactions } from '../storage/storage';
+import { SimulatedLedgerModal } from './SimulatedLedgerModal';
+import { SigningRequest, SignatureResult } from '../lib/signer/adapter';
 
 interface TransactionPreparationModalProps {
   preparedTx: PreparedTransaction;
   intention: PaymentIntention;
   recipient: Recipient;
   isEarlyExecution?: boolean;
+  connectedWallet?: WalletState;
+  liveBalance?: ConnectedWalletBalance;
   onClose: () => void;
   onTransactionConfirmed: (
     completedTx: CompletedTransactionRecord,
     updatedIntentionNextDueDate: string
   ) => void;
   onViewHistory: () => void;
+  onRejectOccurrence?: (occurrenceId: string, intentionId?: string) => void;
+  onDeferOccurrence?: (occurrenceId: string, intentionId?: string) => void;
 }
 
 type SimulationStage =
   | 'ready_for_review'
-  | 'simulating_signing'
-  | 'simulated_signed'
+  | 'ready_for_authorization'
+  | 'ledger_signing'
+  | 'simulated_authorized'
   | 'simulating_broadcast'
   | 'simulated_broadcast'
   | 'simulated_confirmed';
@@ -46,64 +63,500 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
   intention,
   recipient,
   isEarlyExecution,
+  connectedWallet,
+  liveBalance,
   onClose,
   onTransactionConfirmed,
   onViewHistory,
+  onRejectOccurrence,
+  onDeferOccurrence,
 }) => {
   const [simulationStage, setSimulationStage] = useState<SimulationStage>('ready_for_review');
   const [simulatedTxHash, setSimulatedTxHash] = useState<string>('');
   const [copiedHash, setCopiedHash] = useState(false);
   const [copiedCalldata, setCopiedCalldata] = useState(false);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [integrityError, setIntegrityError] = useState<string | null>(null);
+  const [receiptStatus, setReceiptStatus] = useState<TransactionLifecycleStatus>('BROADCAST_SUBMITTED');
+  const [isCheckingReceipt, setIsCheckingReceipt] = useState<boolean>(false);
+  const [signatureResult, setSignatureResult] = useState<SignatureResult | null>(null);
+  const isSubmittingRef = useRef<boolean>(false);
+
+  const occurrenceId = preparedTx.occurrenceId || getOccurrenceId(intention.id, intention.nextDueDate);
+
+  // Check occurrence lock state on mount
+  useEffect(() => {
+    const existingRec = getOccurrenceRecord(occurrenceId);
+    const allHistory = loadCompletedTransactions();
+    const existingHistory = allHistory.find(
+      (h) =>
+        (h.occurrenceId && h.occurrenceId === occurrenceId) ||
+        (h.intentionId === intention.id &&
+          h.status === 'BROADCAST_SUBMITTED' &&
+          h.confirmedAt.startsWith(intention.nextDueDate))
+    );
+
+    if (
+      existingRec &&
+      (existingRec.state === 'CONFIRMED' ||
+        existingRec.state === 'SUBMITTED' ||
+        existingRec.state === 'AUTHORIZED')
+    ) {
+      setIntegrityError(
+        `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [${existingRec.state}] and cannot be executed again.`
+      );
+    } else if (
+      existingHistory &&
+      (existingHistory.status === 'BROADCAST_SUBMITTED' ||
+        existingHistory.status === 'CONFIRMED_ON_CHAIN')
+    ) {
+      setIntegrityError(
+        `Duplicate Execution Protected — Occurrence ${occurrenceId} already has an active ${existingHistory.status === 'CONFIRMED_ON_CHAIN' ? 'confirmed' : 'pending broadcast'} transaction record (Tx: ${existingHistory.txHash.slice(0, 10)}...).`
+      );
+    } else if (existingRec && existingRec.state === 'REJECTED') {
+      // If erroneously marked REJECTED due to a wallet authorization error/cancellation rather than human intention rejection:
+      if (
+        existingRec.error &&
+        (existingRec.error.includes('wallet') ||
+          existingRec.error.includes('Wallet') ||
+          existingRec.error.includes('cancelled') ||
+          existingRec.error.includes('rejected in your wallet') ||
+          existingRec.error.includes('failed in wallet'))
+      ) {
+        deleteOccurrenceRecord(occurrenceId);
+      } else {
+        setIntegrityError(
+          `Rejected Occurrence Protected — Occurrence ${occurrenceId} was REJECTED and cannot be executed or signed again.`
+        );
+      }
+    }
+  }, [occurrenceId, intention.id, intention.nextDueDate]);
 
   const network = SUPPORTED_NETWORKS[preparedTx.networkId];
-  const preflightReport = preparedTx.preflightReport;
+  
+  // Reactively evaluate deterministic safety checks with live connected wallet and on-chain balance
+  const preflightReport = React.useMemo(() => {
+    const token =
+      SUPPORTED_TOKENS.find((t) => t.symbol === intention.tokenSymbol) ||
+      SUPPORTED_TOKENS[0];
+    return runPreflightChecks(
+      recipient,
+      intention,
+      token,
+      preparedTx.recipientAddress,
+      preparedTx.amount,
+      {
+        walletState: connectedWallet,
+        liveBalance,
+      }
+    );
+  }, [recipient, intention, preparedTx.recipientAddress, preparedTx.amount, connectedWallet, liveBalance]);
 
-  // Step 1: Simulate Testnet Signing
-  const handleSimulateSigning = () => {
-    setSimulationStage('simulating_signing');
-    setTimeout(() => {
-      setSimulationStage('simulated_signed');
-    }, 1200);
+  const signingRequest: SigningRequest = React.useMemo(() => {
+    return {
+      preparedTxId: preparedTx.id,
+      occurrenceId,
+      intentId: intention.id,
+      recipientName: recipient.name,
+      recipientAddress: preparedTx.recipientAddress as `0x${string}`,
+      networkId: preparedTx.networkId,
+      networkName: network?.name || 'Base Mainnet',
+      tokenSymbol: preparedTx.tokenSymbol,
+      amount: preparedTx.amount,
+      signerAddress: (connectedWallet?.address || preparedTx.signerAddress || '0x0000000000000000000000000000000000000000') as `0x${string}`,
+      rawCalldata: preparedTx.rawCalldata as `0x${string}`,
+      value: preparedTx.value,
+      estimatedGas: preparedTx.estimatedGas,
+    };
+  }, [preparedTx, occurrenceId, intention.id, recipient.name, network?.name, connectedWallet?.address]);
+
+  // Transition from preflight review to explicit authorization stage
+  const handleProceedToAuthorization = () => {
+    const check = verifyTransactionIntegrity(
+      preparedTx,
+      intention,
+      recipient,
+      connectedWallet?.address,
+      preflightReport
+    );
+    if (!check.valid) {
+      setIntegrityError(check.reason || 'Transaction integrity check failed.');
+      return;
+    }
+    setIntegrityError(null);
+    setSimulationStage('ready_for_authorization');
   };
 
-  // Step 2: Simulate Broadcast & Confirmation
-  const handleSimulateBroadcast = () => {
+  // Callback when simulated Ledger modal approves signature
+  const handleLedgerApproved = (result: SignatureResult) => {
+    setSignatureResult(result);
+    setSimulationStage('simulated_authorized');
+    setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'AUTHORIZED', {
+      signingMethod: 'Ledger Signer (Simulated Demo)',
+    });
+  };
+
+  // Save authorized transaction record into history
+  const handleSaveAuthorizedRecord = () => {
+    const nextDateStr = advanceNextDueDate(intention);
+    const record: CompletedTransactionRecord = {
+      id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      preparedTxId: preparedTx.id,
+      intentionId: intention.id,
+      occurrenceId,
+      occurrenceState: 'AUTHORIZED',
+      recipientId: recipient.id,
+      recipientName: recipient.name,
+      recipientAddress: recipient.address,
+      amount: preparedTx.amount,
+      tokenSymbol: preparedTx.tokenSymbol,
+      networkId: preparedTx.networkId,
+      txHash: signatureResult?.signature || generateSimulatedTxHash(),
+      confirmedAt: new Date().toISOString(),
+      executionMode: 'DEVELOPMENT_TESTNET_SIMULATION',
+      isSimulation: true,
+      isOnChain: false,
+      status: 'CONFIRMED_ON_CHAIN',
+    };
+    onTransactionConfirmed(record, nextDateStr);
+    onClose();
+    onViewHistory();
+  };
+
+  // Human Approval Layer Actions: APPROVE, REJECT, DEFER
+  const handleApproveAndBroadcast = async () => {
+    // 1. Synchronous in-flight guard to prevent rapid double-clicks
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
+    try {
+      const existingRec = getOccurrenceRecord(occurrenceId);
+      const allHistory = loadCompletedTransactions();
+      const existingHistory = allHistory.find(
+        (h) =>
+          (h.occurrenceId && h.occurrenceId === occurrenceId) ||
+          (h.intentionId === intention.id &&
+            h.status === 'BROADCAST_SUBMITTED' &&
+            h.confirmedAt.startsWith(intention.nextDueDate))
+      );
+
+      if (
+        existingRec &&
+        (existingRec.state === 'CONFIRMED' ||
+          existingRec.state === 'SUBMITTED' ||
+          existingRec.state === 'AUTHORIZED')
+      ) {
+        setIntegrityError(
+          `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [${existingRec.state}] and cannot be submitted again.`
+        );
+        isSubmittingRef.current = false;
+        return;
+      }
+
+      if (
+        existingHistory &&
+        (existingHistory.status === 'BROADCAST_SUBMITTED' ||
+          existingHistory.status === 'CONFIRMED_ON_CHAIN')
+      ) {
+        setIntegrityError(
+          `Duplicate Execution Protected — Occurrence ${occurrenceId} already has an active ${existingHistory.status === 'CONFIRMED_ON_CHAIN' ? 'confirmed' : 'pending broadcast'} transaction record.`
+        );
+        isSubmittingRef.current = false;
+        return;
+      }
+
+      if (existingRec && existingRec.state === 'REJECTED') {
+        setIntegrityError(`Rejected Occurrence Protected — Occurrence ${occurrenceId} was REJECTED and cannot be authorized or executed.`);
+        isSubmittingRef.current = false;
+        return;
+      }
+
+      // Lock occurrence in APPROVED and SIGNING states
+      setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'APPROVED');
+      setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'SIGNING');
+
+      await handleBroadcastTransaction();
+    } catch (err: any) {
+      isSubmittingRef.current = false;
+      deleteOccurrenceRecord(occurrenceId);
+      setSimulationStage('ready_for_authorization');
+      setIntegrityError(err?.message || 'Transaction authorization error occurred.');
+    }
+  };
+
+  const handleRejectOccurrence = () => {
+    isSubmittingRef.current = false;
+    setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'REJECTED');
+    if (onRejectOccurrence) {
+      onRejectOccurrence(occurrenceId, intention.id);
+    }
+    onClose();
+  };
+
+  const handleDeferOccurrence = () => {
+    isSubmittingRef.current = false;
+    setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'DEFERRED');
+    if (onDeferOccurrence) {
+      onDeferOccurrence(occurrenceId, intention.id);
+    }
+    onClose();
+  };
+
+  // Live Wallet Execution / Broadcast (EIP-1193 eth_sendTransaction)
+  const handleBroadcastTransaction = async () => {
+    const existingRec = getOccurrenceRecord(occurrenceId);
+    if (existingRec && existingRec.state === 'REJECTED') {
+      setIntegrityError(`Rejected Occurrence Protected — Occurrence ${occurrenceId} was REJECTED and cannot be executed.`);
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    // 1. Re-verify transaction integrity against authoritative intention and verified recipient
+    const check = verifyTransactionIntegrity(
+      preparedTx,
+      intention,
+      recipient,
+      connectedWallet?.address,
+      preflightReport
+    );
+    if (!check.valid) {
+      setIntegrityError(check.reason || 'Transaction integrity check failed.');
+      setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', { error: check.reason });
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    // 2. Ensure preflight has not blocked the transaction
+    if (!preflightReport.canProceed) {
+      setIntegrityError('Transaction preflight safety checks are currently in BLOCKED state.');
+      setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', { error: 'Preflight blocked' });
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    // 3. Confirm wallet is connected
+    if (!connectedWallet?.isConnected || !connectedWallet.address) {
+      setIntegrityError('Wallet connection is required to authorize and broadcast on Base Mainnet. Please connect your MetaMask wallet.');
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    // 4. Confirm wallet is on Base Mainnet (8453)
+    if (connectedWallet.chainId && connectedWallet.chainId !== BASE_MAINNET_CHAIN_ID) {
+      try {
+        const switchRes = await switchToBaseMainnet();
+        if (!switchRes.success) {
+          setIntegrityError(`Connected wallet is on Chain ID ${connectedWallet.chainId}. Please switch network to Base Mainnet (${BASE_MAINNET_CHAIN_ID}) before authorizing.`);
+          deleteOccurrenceRecord(occurrenceId);
+          isSubmittingRef.current = false;
+          return;
+        }
+      } catch {
+        setIntegrityError(`Connected wallet is on Chain ID ${connectedWallet.chainId}. Please switch network to Base Mainnet (${BASE_MAINNET_CHAIN_ID}) before authorizing.`);
+        deleteOccurrenceRecord(occurrenceId);
+        isSubmittingRef.current = false;
+        return;
+      }
+    }
+
+    // 5. Confirm connected signer matches the prepared signer
+    if (
+      preparedTx.signerAddress &&
+      connectedWallet.address.toLowerCase() !== preparedTx.signerAddress.toLowerCase()
+    ) {
+      setIntegrityError(`Connected wallet account (${connectedWallet.address.slice(0, 6)}...${connectedWallet.address.slice(-4)}) does not match the prepared signer (${preparedTx.signerAddress.slice(0, 6)}...${preparedTx.signerAddress.slice(-4)}). Please re-prepare transaction with current account.`);
+      deleteOccurrenceRecord(occurrenceId);
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    setIntegrityError(null);
     setSimulationStage('simulating_broadcast');
-    const newHash = generateSimulatedTxHash();
-    setSimulatedTxHash(newHash);
 
-    setTimeout(() => {
-      setSimulationStage('simulated_broadcast');
+    // Target contract destination: For ERC20 USDC, the target contract is Base USDC. For ETH, recipient address.
+    const token = SUPPORTED_TOKENS.find((t) => t.symbol === intention.tokenSymbol) || SUPPORTED_TOKENS[0];
+    const targetContractAddress = (token.symbol === 'ETH'
+      ? preparedTx.recipientAddress
+      : token.contractAddress) as `0x${string}`;
 
-      // After a short network confirmation delay on Base Sepolia:
-      setTimeout(() => {
-        setSimulationStage('simulated_confirmed');
+    // Request real-wallet execution through active EIP-1193 provider
+    const result = await sendEIP1193Transaction({
+      from: connectedWallet.address as `0x${string}`,
+      to: targetContractAddress,
+      data: preparedTx.rawCalldata,
+      value: preparedTx.value,
+      onLateSuccess: (realTxHash) => {
+        // Late wallet response reconciliation (Requirement 5)
+        setSimulatedTxHash(realTxHash);
+        setSimulationStage('simulated_broadcast');
+        setReceiptStatus('BROADCAST_SUBMITTED');
+        setIntegrityError(null);
 
-        // Compute next recurring due date using exact scheduler rules
-        const nextDateStr = advanceNextDueDate(intention);
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'SUBMITTED', {
+          txHash: realTxHash,
+          signingMethod: connectedWallet.providerName || 'MetaMask',
+        });
+        isSubmittingRef.current = false;
 
-        const completedRecord: CompletedTransactionRecord = {
+        const broadcastRecord: CompletedTransactionRecord = {
           id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           preparedTxId: preparedTx.id,
           intentionId: intention.id,
+          occurrenceId,
+          occurrenceState: 'SUBMITTED',
           recipientId: recipient.id,
           recipientName: recipient.name,
           recipientAddress: recipient.address,
           amount: preparedTx.amount,
           tokenSymbol: preparedTx.tokenSymbol,
           networkId: preparedTx.networkId,
-          txHash: newHash,
-          simulatedRefId: newHash,
+          txHash: realTxHash,
           confirmedAt: new Date().toISOString(),
-          executionMode: 'DEVELOPMENT_TESTNET_SIMULATION',
-          isSimulation: true,
-          isOnChain: false,
+          executionMode: 'BASE_MAINNET_LIVE_EXECUTION',
+          isSimulation: false,
+          isOnChain: true,
+          status: 'BROADCAST_SUBMITTED',
         };
 
-        onTransactionConfirmed(completedRecord, nextDateStr);
-      }, 1800);
-    }, 1200);
+        onTransactionConfirmed(broadcastRecord, '');
+      },
+    });
+
+    if (!result.success || !result.txHash) {
+      // Wallet cancellation or broadcast failure returns user safely to authorization stage
+      setSimulationStage('ready_for_authorization');
+      setIntegrityError(result.error || 'Transaction authorization was cancelled or failed in wallet.');
+      
+      const isTimeout = result.error && /wallet response was not received|timed out|timeout/i.test(result.error);
+      if (isTimeout) {
+        // Outcome unknown on timeout: do not delete occurrence record or mark failed automatically.
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'SIGNING', {
+          error: result.error,
+        });
+        // Requirement 4: Do not unlock the same payment for another signing attempt while the original request may still be pending
+        isSubmittingRef.current = true;
+      } else {
+        deleteOccurrenceRecord(occurrenceId);
+        isSubmittingRef.current = false;
+      }
+      return;
+    }
+
+    // Broadcast Submitted: Real on-chain transaction hash received from EIP-1193 provider
+    const realTxHash = result.txHash;
+    setSimulatedTxHash(realTxHash);
+    setSimulationStage('simulated_broadcast');
+    setReceiptStatus('BROADCAST_SUBMITTED');
+
+    // Lock occurrence in SUBMITTED state permanently for this occurrence
+    setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'SUBMITTED', {
+      txHash: realTxHash,
+      signingMethod: connectedWallet.providerName || 'MetaMask',
+    });
+    // Submission successful: in-flight guard remains locked
+    isSubmittingRef.current = true;
+
+    const broadcastRecord: CompletedTransactionRecord = {
+      id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      preparedTxId: preparedTx.id,
+      intentionId: intention.id,
+      occurrenceId,
+      occurrenceState: 'SUBMITTED',
+      recipientId: recipient.id,
+      recipientName: recipient.name,
+      recipientAddress: recipient.address,
+      amount: preparedTx.amount,
+      tokenSymbol: preparedTx.tokenSymbol,
+      networkId: preparedTx.networkId,
+      txHash: realTxHash,
+      confirmedAt: new Date().toISOString(),
+      executionMode: 'BASE_MAINNET_LIVE_EXECUTION',
+      isSimulation: false,
+      isOnChain: true,
+      status: 'BROADCAST_SUBMITTED',
+    };
+
+    // Store broadcast record in history immediately (does NOT advance recurrence because status is BROADCAST_SUBMITTED)
+    onTransactionConfirmed(broadcastRecord, '');
+
+    // Query on-chain receipt using eth_getTransactionReceipt via active provider
+    setIsCheckingReceipt(true);
+    try {
+      const receiptCheck = await checkTransactionReceipt(realTxHash);
+      setReceiptStatus(receiptCheck.status);
+
+      if (receiptCheck.status === 'CONFIRMED_ON_CHAIN') {
+        setSimulationStage('simulated_confirmed');
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'CONFIRMED', {
+          txHash: realTxHash,
+          blockNumber: receiptCheck.blockNumber,
+        });
+
+        const nextDateStr = advanceNextDueDate(intention);
+        const confirmedRecord: CompletedTransactionRecord = {
+          ...broadcastRecord,
+          occurrenceState: 'CONFIRMED',
+          status: 'CONFIRMED_ON_CHAIN',
+          blockNumber: receiptCheck.blockNumber,
+        };
+        onTransactionConfirmed(confirmedRecord, nextDateStr);
+      } else if (receiptCheck.status === 'FAILED_ON_CHAIN') {
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', {
+          txHash: realTxHash,
+          blockNumber: receiptCheck.blockNumber,
+        });
+
+        const failedRecord: CompletedTransactionRecord = {
+          ...broadcastRecord,
+          occurrenceState: 'FAILED',
+          status: 'FAILED_ON_CHAIN',
+          blockNumber: receiptCheck.blockNumber,
+        };
+        onTransactionConfirmed(failedRecord, '');
+      }
+    } catch {
+      // Non-blocking: transaction remains in BROADCAST_SUBMITTED pending state
+    } finally {
+      setIsCheckingReceipt(false);
+    }
+  };
+
+  const handleManualCheckReceipt = async () => {
+    if (!simulatedTxHash || !simulatedTxHash.startsWith('0x')) return;
+    setIsCheckingReceipt(true);
+    try {
+      const check = await checkTransactionReceipt(simulatedTxHash);
+      setReceiptStatus(check.status);
+
+      const recordBase: CompletedTransactionRecord = {
+        id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        preparedTxId: preparedTx.id,
+        intentionId: intention.id,
+        recipientId: recipient.id,
+        recipientName: recipient.name,
+        recipientAddress: recipient.address,
+        amount: preparedTx.amount,
+        tokenSymbol: preparedTx.tokenSymbol,
+        networkId: preparedTx.networkId,
+        txHash: simulatedTxHash,
+        confirmedAt: new Date().toISOString(),
+        executionMode: 'BASE_MAINNET_LIVE_EXECUTION',
+        isSimulation: false,
+        isOnChain: true,
+        status: check.status,
+        blockNumber: check.blockNumber,
+      };
+
+      if (check.status === 'CONFIRMED_ON_CHAIN') {
+        setSimulationStage('simulated_confirmed');
+        const nextDateStr = advanceNextDueDate(intention);
+        onTransactionConfirmed(recordBase, nextDateStr);
+      } else if (check.status === 'FAILED_ON_CHAIN') {
+        onTransactionConfirmed(recordBase, '');
+      }
+    } finally {
+      setIsCheckingReceipt(false);
+    }
   };
 
   const handleCopyHash = () => {
@@ -121,22 +574,22 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-lg shadow-2xl space-y-4 max-h-[92vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-jexi-overlay backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+      <div className="bg-jexi-modal border border-jexi-subtle rounded-2xl w-full max-w-lg shadow-2xl space-y-4 max-h-[92vh] flex flex-col overflow-hidden text-jexi-primary">
         {/* Header */}
-        <div className="p-4 border-b border-zinc-800 flex items-center justify-between shrink-0 bg-zinc-950/40">
+        <div className="p-4 border-b border-jexi-subtle flex items-center justify-between shrink-0 bg-jexi-elevated/40">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
               <ShieldCheck className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-zinc-100">Transaction Preparation</h3>
-              <p className="text-[10px] text-zinc-400 font-mono">ID: {preparedTx.id}</p>
+              <h3 className="text-sm font-bold text-jexi-primary">Transaction Preparation</h3>
+              <p className="text-[10px] text-jexi-muted font-mono">Preparation ID: #{preparedTx.id.replace('tx_prep_', '')}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-zinc-200 p-1 text-sm font-semibold"
+            className="text-jexi-muted hover:text-jexi-primary p-1 text-sm font-semibold cursor-pointer"
           >
             ✕
           </button>
@@ -145,77 +598,170 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
         {/* Scrollable Content */}
         <div className="p-4 space-y-4 overflow-y-auto flex-1">
           {/* Unsigned Transaction Status Ribbon */}
-          <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between">
+          <div className="p-3 bg-signa-elevated border border-signa-subtle rounded-xl flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Lock className="w-4 h-4 text-amber-400" />
+              <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400" />
               <div>
-                <div className="text-xs font-bold text-zinc-100 uppercase tracking-wider">
+                <div className="text-xs font-bold text-signa-primary uppercase tracking-wider">
                   {simulationStage === 'ready_for_review' && 'Status: Unsigned Transaction'}
-                  {simulationStage === 'simulating_signing' && 'Status: Simulating Testnet Signer...'}
-                  {simulationStage === 'simulated_signed' && 'Status: Simulated Signed'}
-                  {simulationStage === 'simulating_broadcast' && 'Status: Broadcasting to Testnet...'}
-                  {simulationStage === 'simulated_broadcast' && 'Status: Simulated Broadcast'}
-                  {simulationStage === 'simulated_confirmed' && 'Status: Confirmed (Simulated Testnet)'}
+                  {simulationStage === 'ready_for_authorization' && 'Status: Ready for Authorization'}
+                  {simulationStage === 'ledger_signing' && 'Status: Ledger Signing (Simulated Demo)'}
+                  {simulationStage === 'simulated_authorized' && 'Status: Transaction Authorized'}
+                  {simulationStage === 'simulating_broadcast' && 'Status: Processing Broadcast...'}
+                  {simulationStage === 'simulated_broadcast' && 'Status: Broadcast Submitted'}
+                  {simulationStage === 'simulated_confirmed' && 'Status: Transaction Confirmed On-Chain'}
                 </div>
-                <div className="text-[10px] text-zinc-400">
+                <div className="text-[10px] text-signa-muted">
                   {simulationStage === 'ready_for_review'
-                    ? 'Prepared safely • Awaiting your authorization'
-                    : 'Development testnet execution pipeline (Off-chain Simulation)'}
+                    ? 'Prepared safely • Awaiting review and preflight validation'
+                    : simulationStage === 'ready_for_authorization'
+                    ? 'Transaction prepared successfully • Awaiting your authorization'
+                    : 'Deterministic safety verified • Ready for self-custodial signing'}
                 </div>
               </div>
             </div>
 
             <span
               className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider ${
-                simulationStage === 'simulated_confirmed'
-                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                  : simulationStage === 'ready_for_review'
-                  ? 'bg-zinc-800 text-amber-300 border border-amber-500/40'
-                  : 'bg-sky-500/20 text-sky-300 border border-sky-500/40 animate-pulse'
+                simulationStage === 'simulated_confirmed' || simulationStage === 'simulated_authorized'
+                  ? 'bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/40'
+                  : simulationStage === 'ready_for_authorization'
+                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                  : 'bg-signa-surface text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/40'
               }`}
             >
-              {simulationStage === 'ready_for_review' ? 'UNSIGNED' : simulationStage.replace('simulated_', 'SIMULATED ')}
+              {simulationStage === 'ready_for_review'
+                ? 'UNSIGNED'
+                : simulationStage === 'ready_for_authorization'
+                ? 'PREPARED'
+                : simulationStage === 'simulated_authorized'
+                ? 'AUTHORIZED'
+                : 'PREVIEW'}
             </span>
           </div>
 
-          {/* Early Execution Notice Banner if executed before scheduled date */}
-          {isEarlyExecution && (
-            <div className="p-3 bg-amber-950/40 border border-amber-500/50 rounded-xl flex items-start gap-2.5 text-xs text-amber-200">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          {/* Integrity Error Banner */}
+          {integrityError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-500/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200">
+              <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold text-amber-300 block">Early Payment Execution</span>
-                <span className="text-[11px] text-zinc-300 block mt-0.5 leading-relaxed">
-                  This payment was scheduled for <strong className="text-amber-200">{intention.nextDueDate}</strong>. You are intentionally choosing to execute it early. The recurring schedule rule will remain unchanged and will advance to the next recurring occurrence.
+                <span className="font-bold text-rose-900 dark:text-rose-300 block">Pre-Execution Integrity Blocked</span>
+                <span className="text-[11px] text-rose-800 dark:text-rose-200 block mt-0.5 leading-relaxed">{integrityError}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Completed Intention Alert Banner */}
+          {(intention.isCompleted || (intention.frequency === 'once' && (intention.isCompleted || !!intention.completedAt))) && !integrityError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-500/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200">
+              <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-rose-900 dark:text-rose-300 block">One-Time Intention Already Completed</span>
+                <span className="text-[11px] text-rose-800 dark:text-rose-200 block mt-0.5 leading-relaxed">
+                  This one-time payment intention has already completed its lifecycle and is terminal. Further authorization and execution are strictly blocked.
                 </span>
               </div>
             </div>
           )}
 
-          {/* Core Transaction Card */}
-          <div className="bg-zinc-950/90 border border-zinc-800 rounded-xl p-4 space-y-3">
-            <div className="text-center py-2 border-b border-zinc-800/80">
-              <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Transfer Amount</span>
-              <div className="text-2xl font-extrabold text-emerald-400 font-mono tracking-tight mt-0.5">
-                {preparedTx.amount.toLocaleString()} {preparedTx.tokenSymbol}
+          {/* Rejected Intention Alert Banner */}
+          {(intention.isRejected || (intention.frequency === 'once' && (intention.isRejected || !!intention.rejectedAt))) && !integrityError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-500/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200">
+              <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-rose-900 dark:text-rose-300 block">One-Time Intention Rejected</span>
+                <span className="text-[11px] text-rose-800 dark:text-rose-200 block mt-0.5 leading-relaxed">
+                  This one-time payment intention was rejected and is terminal. Further authorization and execution are strictly blocked.
+                </span>
               </div>
-              <span className="text-[11px] text-zinc-500 font-medium">on Base Sepolia Testnet</span>
+            </div>
+          )}
+
+          {/* Inactive Intention Alert Banner */}
+          {!intention.active && !intention.isCompleted && !(intention.frequency === 'once' && !!intention.completedAt) && !integrityError && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-500/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200">
+              <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-rose-900 dark:text-rose-300 block">Intention Inactive or Paused</span>
+                <span className="text-[11px] text-rose-800 dark:text-rose-200 block mt-0.5 leading-relaxed">
+                  This scheduled intention is currently paused or inactive. Transaction signing and execution are blocked.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Early Execution Notice Banner if executed before scheduled date */}
+          {isEarlyExecution && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-500/50 rounded-xl flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-amber-800 dark:text-amber-300 block">Early Payment Execution</span>
+                <span className="text-[11px] text-jexi-secondary block mt-0.5 leading-relaxed">
+                  This payment was scheduled for <strong className="text-amber-800 dark:text-amber-200">{intention.nextDueDate}{intention.scheduleTime ? ` at ${intention.scheduleTime}` : ''}</strong>. You are intentionally choosing to execute it early. The recurring schedule rule will remain unchanged and will advance to the next recurring occurrence.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Signing Authority Status Banner */}
+          <div className="p-3 bg-jexi-surface border border-jexi-subtle rounded-xl flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Wallet className={`w-4 h-4 shrink-0 ${connectedWallet?.isConnected ? 'text-emerald-500' : 'text-jexi-muted'}`} />
+              <div className="min-w-0">
+                <span className="text-jexi-muted text-[10px] block uppercase font-mono">Signing Authority</span>
+                {connectedWallet?.isConnected && connectedWallet.address ? (
+                  <span className="font-semibold text-jexi-primary truncate block font-mono text-[11px]">
+                    {connectedWallet.providerName || 'EVM Wallet'} · {connectedWallet.address.slice(0, 6)}...{connectedWallet.address.slice(-4)}
+                  </span>
+                ) : (
+                  <span className="text-jexi-secondary font-medium block">
+                    Self-Custody Mode (Disconnected Wallet)
+                  </span>
+                )}
+              </div>
+            </div>
+            <span
+              className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 uppercase ${
+                connectedWallet?.isConnected
+                  ? connectedWallet.isWrongNetwork
+                    ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300'
+                    : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-jexi-elevated text-jexi-muted border border-jexi-subtle'
+              }`}
+            >
+              {connectedWallet?.isConnected
+                ? connectedWallet.isWrongNetwork
+                  ? 'Wrong Chain'
+                  : 'Base'
+                : 'Offline Preview'}
+            </span>
+          </div>
+
+          {/* Core Transaction Card */}
+          <div className="bg-jexi-surface border border-jexi-subtle rounded-xl p-4 space-y-3">
+            <div className="text-center py-2 border-b border-jexi-divider">
+              <span className="text-[11px] font-semibold text-jexi-muted uppercase tracking-wider">Transfer Amount</span>
+              <div className="text-2xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono tracking-tight mt-0.5">
+                {preparedTx.amount.toLocaleString()} {formatTokenSymbol(preparedTx.tokenSymbol)}
+              </div>
+              <span className="text-[11px] text-jexi-muted font-medium">on {network?.name || 'Base'}</span>
             </div>
 
             <div className="space-y-2 text-xs">
               <div className="flex justify-between items-center">
-                <span className="text-zinc-400">Target Recipient</span>
-                <span className="font-semibold text-zinc-100">{recipient.name}</span>
+                <span className="text-jexi-muted">Target Recipient</span>
+                <span className="font-semibold text-jexi-primary">{recipient.name}</span>
               </div>
 
               <div>
-                <span className="text-zinc-400 block mb-1">Destination Address</span>
-                <div className="p-2 bg-zinc-900 rounded-lg border border-zinc-800 font-mono text-[11px] text-zinc-300 break-all flex items-center justify-between gap-2">
+                <span className="text-jexi-muted block mb-1">Destination Address</span>
+                <div className="p-2 bg-jexi-elevated rounded-lg border border-jexi-subtle font-mono text-[11px] text-jexi-secondary break-all flex items-center justify-between gap-2">
                   <span>{preparedTx.recipientAddress}</span>
                   <a
-                    href={`${network?.explorerUrl || 'https://sepolia.basescan.org'}/address/${preparedTx.recipientAddress}`}
+                    href={`${network?.explorerUrl || 'https://basescan.org'}/address/${preparedTx.recipientAddress}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-zinc-400 hover:text-zinc-200"
+                    className="text-jexi-muted hover:text-jexi-primary transition-colors cursor-pointer"
                     title="View on Basescan"
                   >
                     <ExternalLink className="w-3.5 h-3.5 shrink-0" />
@@ -224,31 +770,31 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
               </div>
 
               <div className="flex justify-between items-center pt-1">
-                <span className="text-zinc-400">Estimated Gas Fee</span>
-                <span className="font-mono text-zinc-300 text-[11px]">{preparedTx.estimatedGas}</span>
+                <span className="text-jexi-muted">Estimated Gas Fee</span>
+                <span className="font-mono text-jexi-secondary text-[11px]">{preparedTx.estimatedGas}</span>
               </div>
             </div>
 
             {/* Toggle Raw Calldata */}
-            <div className="pt-2 border-t border-zinc-800/80">
+            <div className="pt-2 border-t border-jexi-divider">
               <button
                 type="button"
                 onClick={() => setShowRawPayload(!showRawPayload)}
-                className="text-[11px] text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5 transition-colors"
+                className="text-[11px] text-jexi-muted hover:text-jexi-primary flex items-center gap-1.5 transition-colors cursor-pointer"
               >
                 <Code2 className="w-3.5 h-3.5" />
-                <span>{showRawPayload ? 'Hide' : 'Inspect'} Raw EVM Calldata</span>
+                <span>{showRawPayload ? 'Hide' : 'Inspect'} Transaction Payload & Technical Data</span>
               </button>
 
               {showRawPayload && (
-                <div className="mt-2 p-2.5 bg-zinc-900 rounded-lg border border-zinc-800 text-[10px] font-mono text-zinc-400 break-all">
-                  <div className="flex items-center justify-between text-zinc-500 mb-1">
+                <div className="mt-2 p-2.5 bg-jexi-elevated rounded-lg border border-jexi-subtle text-[10px] font-mono text-jexi-secondary break-all">
+                  <div className="flex items-center justify-between text-jexi-muted mb-1">
                     <span>ERC20 transfer(address,uint256)</span>
                     <button
                       onClick={handleCopyCalldata}
-                      className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-[9px]"
+                      className="text-jexi-muted hover:text-jexi-primary flex items-center gap-1 text-[9px] cursor-pointer"
                     >
-                      {copiedCalldata ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      {copiedCalldata ? <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3 h-3" />}
                       Copy Calldata
                     </button>
                   </div>
@@ -261,18 +807,18 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
           {/* Preflight Safety Audit Section */}
           <PreflightReportView report={preflightReport} />
 
-          {/* SIMULATION CONTROLLER (DEVELOPMENT TESTNET MODE) */}
-          <div className="bg-amber-950/20 border-2 border-amber-500/50 rounded-xl p-4 space-y-3.5">
+          {/* PREPARATION CONTROLLER (SELF-CUSTODY MODE) */}
+          <div className="bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-500/50 rounded-xl p-4 space-y-3.5">
             <div className="flex items-start gap-2.5">
-              <div className="w-6 h-6 rounded-md bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+              <div className="w-6 h-6 rounded-md bg-amber-100 dark:bg-amber-500/20 border border-amber-200 dark:border-amber-500/40 flex items-center justify-center text-amber-700 dark:text-amber-400 shrink-0 mt-0.5">
                 <Cpu className="w-3.5 h-3.5" />
               </div>
               <div>
-                <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wide">
-                  Development Testnet Simulation Mode
+                <h4 className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide">
+                  Self-Custody Preparation Environment
                 </h4>
-                <p className="text-[11px] text-amber-200/80 leading-relaxed mt-0.5">
-                  This execution flow operates entirely in testnet simulation. <strong>No Ledger hardware signing is invoked in this phase.</strong> Real Ledger hardware signing requires the physical USB/WebHID bridge to be connected.
+                <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 leading-relaxed mt-0.5">
+                  Deterministic safety preview. <strong>JEXI does not hold custody of your funds.</strong> Final transaction signing remains strictly under your hardware wallet or connected signer authority.
                 </p>
               </div>
             </div>
@@ -281,115 +827,347 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
             <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] font-semibold py-1">
               <div
                 className={`p-2 rounded-lg border transition-all ${
-                  simulationStage === 'ready_for_review' || simulationStage === 'simulating_signing'
-                    ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                    : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                  simulationStage === 'ready_for_review'
+                    ? 'bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-500/50 text-amber-800 dark:text-amber-300'
+                    : 'bg-signa-surface border-signa-subtle text-signa-muted'
                 }`}
               >
-                1. Review Unsigned
+                1. Preflight Review
               </div>
               <div
                 className={`p-2 rounded-lg border transition-all ${
-                  simulationStage === 'simulated_signed' || simulationStage === 'simulating_broadcast'
-                    ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
-                    : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                  simulationStage === 'ready_for_authorization' || simulationStage === 'ledger_signing'
+                    ? 'bg-sky-100 dark:bg-sky-500/20 border-sky-300 dark:border-sky-500/50 text-sky-800 dark:text-sky-300'
+                    : 'bg-signa-surface border-signa-subtle text-signa-muted'
                 }`}
               >
-                2. Simulated Sign
+                2. Authorization
               </div>
               <div
                 className={`p-2 rounded-lg border transition-all ${
-                  simulationStage === 'simulated_broadcast' || simulationStage === 'simulated_confirmed'
-                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                    : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                  simulationStage === 'simulated_authorized' || simulationStage === 'simulated_broadcast' || simulationStage === 'simulated_confirmed'
+                    ? 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-300 dark:border-emerald-500/50 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-signa-surface border-signa-subtle text-signa-muted'
                 }`}
               >
-                3. Broadcast & Confirm
+                3. Signed Result
               </div>
             </div>
 
-            {/* Step Controls */}
+            {/* Step 1: Preflight Review Controller */}
             {simulationStage === 'ready_for_review' && (
               <button
-                disabled={!preflightReport.canProceed}
-                onClick={handleSimulateSigning}
-                className="w-full py-2.5 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-950 font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2"
+                disabled={
+                  !preflightReport.canProceed ||
+                  !intention.active ||
+                  intention.isCompleted ||
+                  intention.isRejected ||
+                  (intention.frequency === 'once' && (!!intention.completedAt || !!intention.rejectedAt)) ||
+                  !!integrityError
+                }
+                onClick={handleProceedToAuthorization}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-950 font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Cpu className="w-4 h-4" />
-                <span>Simulate Testnet Signer (Dev Mode)</span>
+                <span>Continue to Authorization Stage</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
 
-            {simulationStage === 'simulating_signing' && (
-              <div className="py-2.5 text-center text-xs text-amber-300 font-semibold flex items-center justify-center gap-2">
-                <span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
-                Generating simulated cryptographic signature for Base Sepolia...
+            {/* Step 2: READY FOR AUTHORIZATION Panel */}
+            {simulationStage === 'ready_for_authorization' && (
+              <div className="space-y-3 text-left border-t border-signa-divider pt-3">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                      READY FOR AUTHORIZATION
+                    </span>
+                    <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/20 px-2 py-0.5 rounded">
+                      Preflight Passed
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 dark:text-zinc-300 font-medium">
+                    Transaction prepared successfully.
+                  </p>
+                </div>
+
+                {/* Structured Summary Card */}
+                <div className="p-3.5 bg-signa-surface border border-signa-subtle rounded-xl space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-signa-muted font-medium">Signing Authority:</span>
+                    <span className="font-mono font-bold text-signa-primary text-[11px]">
+                      {connectedWallet?.address ? `${connectedWallet.address.slice(0, 6)}...${connectedWallet.address.slice(-4)}` : preparedTx.signerAddress ? `${preparedTx.signerAddress.slice(0, 6)}...${preparedTx.signerAddress.slice(-4)}` : '0x71C...4e8B'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-signa-muted font-medium">Target Network:</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-[11px]">
+                      {network?.name || 'Base Mainnet'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-signa-muted font-medium">Amount:</span>
+                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                      {preparedTx.amount.toLocaleString()} {formatTokenSymbol(preparedTx.tokenSymbol)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-signa-muted font-medium">Recipient:</span>
+                    <span className="font-semibold text-signa-primary">
+                      {recipient.name} ({preparedTx.recipientAddress.slice(0, 6)}...{preparedTx.recipientAddress.slice(-4)})
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center pt-1 border-t border-signa-divider">
+                    <span className="text-signa-muted font-medium">Status:</span>
+                    <span className="font-bold text-amber-600 dark:text-amber-400 uppercase text-[11px] flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" />
+                      Awaiting Authorization
+                    </span>
+                  </div>
+                </div>
+
+                {/* Signer Selection Buttons */}
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const existingRec = getOccurrenceRecord(occurrenceId);
+                      if (existingRec && existingRec.state === 'REJECTED') {
+                        setIntegrityError(`Rejected Occurrence Protected — Occurrence ${occurrenceId} was REJECTED and cannot be signed.`);
+                        return;
+                      }
+                      setSimulationStage('ledger_signing');
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer border border-slate-700"
+                  >
+                    <Cpu className="w-4 h-4 text-emerald-400" />
+                    <span>Authorize via Ledger (Simulated Demo)</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+
+                  {connectedWallet?.isConnected && (
+                    <button
+                      type="button"
+                      onClick={handleApproveAndBroadcast}
+                      disabled={isSubmittingRef.current || simulationStage === 'simulating_broadcast' || !!integrityError}
+                      className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Wallet className="w-4 h-4" />
+                      <span>Authorize & Broadcast via Wallet</span>
+                    </button>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleRejectOccurrence}
+                      className="py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-300 border border-rose-500/30 font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>REJECT</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDeferOccurrence}
+                      className="py-2 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30 font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>DEFER</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
-            {simulationStage === 'simulated_signed' && (
-              <div className="space-y-2">
-                <div className="p-2.5 bg-zinc-900/90 rounded-lg border border-zinc-800 text-[11px] text-zinc-300 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-sky-400 font-semibold">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Signature Generated (Simulated Testnet Key)
+            {/* Step 3: AUTHORIZED Panel */}
+            {simulationStage === 'simulated_authorized' && (
+              <div className="p-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/40 rounded-xl space-y-3 text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 uppercase">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    AUTHORIZED
                   </span>
-                  <span className="text-[10px] text-zinc-400">Signature ready</span>
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-500/20 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/30">
+                    SIMULATED SIGNATURE
+                  </span>
                 </div>
-                <button
-                  onClick={handleSimulateBroadcast}
-                  className="w-full py-2.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2"
-                >
-                  <Radio className="w-4 h-4" />
-                  <span>Broadcast to Base Sepolia (Simulated)</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+
+                <p className="text-xs text-emerald-800 dark:text-emerald-200 font-medium leading-relaxed">
+                  The transaction has been authorized by the simulated signer.
+                </p>
+
+                {signatureResult?.signature && (
+                  <div>
+                    <span className="text-[10px] text-signa-muted block mb-1 font-mono">
+                      Deterministic Demo Signature Result:
+                    </span>
+                    <div className="p-2 bg-signa-surface rounded font-mono text-[10px] text-signa-secondary break-all flex items-center justify-between gap-2 border border-signa-subtle">
+                      <span className="truncate">{signatureResult.signature}</span>
+                      <button
+                        onClick={() => {
+                          if (signatureResult.signature) {
+                            navigator.clipboard.writeText(signatureResult.signature);
+                          }
+                        }}
+                        className="p-1 text-signa-muted hover:text-signa-primary cursor-pointer shrink-0"
+                        title="Copy Signature Payload"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    onClick={handleSaveAuthorizedRecord}
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 text-xs font-bold transition-all text-center cursor-pointer shadow-xs"
+                  >
+                    Complete & Save Authorized Record
+                  </button>
+
+                  {connectedWallet?.isConnected && (
+                    <button
+                      onClick={handleApproveAndBroadcast}
+                      disabled={isSubmittingRef.current || simulationStage === 'simulating_broadcast' || !!integrityError}
+                      className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all text-center cursor-pointer shadow-xs"
+                    >
+                      Broadcast via Wallet
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
             {simulationStage === 'simulating_broadcast' && (
-              <div className="py-2.5 text-center text-xs text-sky-300 font-semibold flex items-center justify-center gap-2">
-                <span className="w-3 h-3 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
-                Transmitting transaction to Base Sepolia RPC nodes...
+              <div className="py-2.5 text-center text-xs text-sky-700 dark:text-sky-300 font-semibold flex items-center justify-center gap-2">
+                <span className="w-3 h-3 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
+                Requesting transaction authorization in your wallet...
               </div>
             )}
 
             {simulationStage === 'simulated_broadcast' && (
-              <div className="py-2.5 text-center text-xs text-sky-300 font-semibold flex items-center justify-center gap-2">
-                <span className="w-3 h-3 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin" />
-                Mining block on Base Sepolia (Simulated)...
-              </div>
-            )}
-
-            {simulationStage === 'simulated_confirmed' && (
-              <div className="p-3 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2 text-left">
+              <div className="p-3 bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-500/40 rounded-xl space-y-2 text-left">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Simulated Confirmation Complete (Testnet Mode)
+                  <span className="text-xs font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1.5">
+                    <Radio className="w-4 h-4 text-sky-500" />
+                    Transaction Broadcast Submitted
                   </span>
-                  <span className="text-[10px] uppercase font-bold text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded border border-emerald-500/30">
-                    Simulation
+                  <span className="text-[10px] uppercase font-bold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/20 px-2 py-0.5 rounded border border-sky-200 dark:border-sky-500/30">
+                    PENDING RECEIPT
                   </span>
                 </div>
 
                 <div>
-                  <span className="text-[10px] text-zinc-400 block mb-0.5">Simulated Reference ID (Dev Mode):</span>
-                  <div className="p-2 bg-zinc-950 rounded font-mono text-[10px] text-zinc-300 break-all flex items-center justify-between gap-2 border border-zinc-800">
-                    <span>{simulatedTxHash}</span>
-                    <button
-                      onClick={handleCopyHash}
-                      className="text-zinc-400 hover:text-zinc-200"
-                      title="Copy Simulation Ref ID"
-                    >
-                      {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
+                  <span className="text-[10px] text-jexi-muted block mb-0.5">
+                    Transaction Hash (Base Mainnet):
+                  </span>
+                  <div className="p-2 bg-jexi-surface rounded font-mono text-[10px] text-jexi-secondary break-all flex items-center justify-between gap-2 border border-jexi-subtle">
+                    <span className="truncate">{simulatedTxHash}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <a
+                        href={`${network?.explorerUrl || 'https://basescan.org'}/tx/${simulatedTxHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-1 text-jexi-muted hover:text-jexi-primary transition-colors cursor-pointer"
+                        title="View on BaseScan Explorer"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                      <button
+                        onClick={handleCopyHash}
+                        className="p-1 text-jexi-muted hover:text-jexi-primary cursor-pointer"
+                        title="Copy Transaction Hash"
+                      >
+                        {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <p className="text-[10px] text-zinc-400">
-                  Recorded in local simulation history. No real on-chain transaction was broadcast to BaseScan.
+                <p className="text-[10px] text-jexi-muted leading-relaxed">
+                  Transaction submitted to Base Mainnet via connected wallet. Awaiting block receipt confirmation.
+                </p>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    disabled={isCheckingReceipt}
+                    onClick={handleManualCheckReceipt}
+                    className="flex-1 py-2 px-3 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition-all text-center cursor-pointer shadow-xs disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    {isCheckingReceipt ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Checking Receipt...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Check On-Chain Receipt</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onViewHistory();
+                    }}
+                    className="py-2 px-3 rounded-lg bg-jexi-elevated hover:bg-jexi-hover text-jexi-primary border border-jexi-subtle text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    View History
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {simulationStage === 'simulated_confirmed' && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/40 rounded-xl space-y-2 text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4" />
+                    {simulatedTxHash.startsWith('0x')
+                      ? `Confirmed On-Chain (${network?.name || 'Base'})`
+                      : `Transaction Prepared (${network?.name || 'Base'})`}
+                  </span>
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-500/20 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/30">
+                    {simulatedTxHash.startsWith('0x') ? 'CONFIRMED' : 'PREPARED'}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="text-[10px] text-jexi-muted block mb-0.5">
+                    {simulatedTxHash.startsWith('0x') ? 'Transaction Hash (Base Mainnet):' : 'Prepared Transaction Reference:'}
+                  </span>
+                  <div className="p-2 bg-jexi-surface rounded font-mono text-[10px] text-jexi-secondary break-all flex items-center justify-between gap-2 border border-jexi-subtle">
+                    <span className="truncate">{simulatedTxHash}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {simulatedTxHash.startsWith('0x') && (
+                        <a
+                          href={`${network?.explorerUrl || 'https://basescan.org'}/tx/${simulatedTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1 text-jexi-muted hover:text-jexi-primary transition-colors cursor-pointer"
+                          title="View on Basescan Explorer"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+                      <button
+                        onClick={handleCopyHash}
+                        className="p-1 text-jexi-muted hover:text-jexi-primary cursor-pointer"
+                        title="Copy Transaction Reference"
+                      >
+                        {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-jexi-muted">
+                  {simulatedTxHash.startsWith('0x')
+                    ? 'Transaction receipt verified on Base Mainnet (status: 0x1). Recurrence schedule updated.'
+                    : 'Recorded in local transaction history. JEXI prepares transactions safely; funds remain under your self-custody.'}
                 </p>
 
                 <div className="flex items-center gap-2 pt-1">
@@ -398,13 +1176,13 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
                       onClose();
                       onViewHistory();
                     }}
-                    className="flex-1 py-2 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold transition-all text-center"
+                    className="flex-1 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 text-xs font-bold transition-all text-center cursor-pointer shadow-xs"
                   >
                     View In Transaction History
                   </button>
                   <button
                     onClick={onClose}
-                    className="py-2 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                    className="py-2 px-3 rounded-lg bg-jexi-elevated hover:bg-jexi-hover text-jexi-primary border border-jexi-subtle text-xs font-medium transition-colors cursor-pointer"
                   >
                     Done
                   </button>
@@ -415,18 +1193,28 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
         </div>
 
         {/* Footer */}
-        <div className="p-3 border-t border-zinc-800/80 bg-zinc-950/40 flex items-center justify-between shrink-0">
-          <span className="text-[10px] text-zinc-500">
-            Jexi Self-Custody Engine • Non-custodial Architecture
+        <div className="p-3 border-t border-signa-subtle bg-signa-elevated/40 flex items-center justify-between shrink-0">
+          <span className="text-[10px] text-signa-muted">
+            JEXI Self-Custody Engine • Non-custodial Architecture
           </span>
           <button
             onClick={onClose}
-            className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+            className="px-3.5 py-1.5 rounded-lg bg-signa-elevated hover:bg-signa-hover text-signa-primary border border-signa-subtle text-xs font-medium transition-colors cursor-pointer"
           >
             Close
           </button>
         </div>
       </div>
+
+      {/* Simulated Ledger Hardware Signer Modal */}
+      {simulationStage === 'ledger_signing' && (
+        <SimulatedLedgerModal
+          request={signingRequest}
+          onClose={() => setSimulationStage('ready_for_authorization')}
+          onApproved={handleLedgerApproved}
+          onRejected={handleRejectOccurrence}
+        />
+      )}
     </div>
   );
 };

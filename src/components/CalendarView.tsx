@@ -19,6 +19,7 @@ import {
   getOccurrencesForMonth,
   formatScheduleCadence,
 } from '../utils/scheduler';
+import { loadOccurrenceRecords } from '../storage/storage';
 
 interface CalendarViewProps {
   intentions: PaymentIntention[];
@@ -30,7 +31,7 @@ interface CalendarViewProps {
 export interface CalendarItem {
   id: string;
   type: 'intention' | 'history';
-  status: 'OVERDUE' | 'DUE_TODAY' | 'UPCOMING' | 'PAUSED' | 'COMPLETED';
+  status: 'OVERDUE' | 'DUE_TODAY' | 'UPCOMING' | 'PAUSED' | 'COMPLETED' | 'REJECTED';
   amount: number;
   tokenSymbol: string;
   recipientName: string;
@@ -87,6 +88,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
     // Current scheduled occurrence on nextDueDate
     if (intent.nextDueDate) {
+      // If one-time intention is already completed and represented in history, skip duplicate
+      if (status === 'COMPLETED' && history?.some((h) => h.intentionId === intent.id)) {
+        return;
+      }
       const [dYear, dMonth] = intent.nextDueDate.split('-').map((n) => parseInt(n, 10));
       if (dYear === year && dMonth === month + 1) {
         addItemToDate(intent.nextDueDate, {
@@ -151,6 +156,34 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     });
   }
 
+  // 3. Process rejected occurrences from occurrence records
+  const occurrenceRecords = loadOccurrenceRecords();
+  Object.values(occurrenceRecords).forEach((record) => {
+    if (record.state === 'REJECTED' && record.dueDate) {
+      const [rYear, rMonth] = record.dueDate.split('-').map((n) => parseInt(n, 10));
+      if (rYear === year && rMonth === month + 1) {
+        const matchingIntent = intentions.find((i) => i.id === record.intentionId);
+        const recipient = matchingIntent ? recipients.find((r) => r.id === matchingIntent.recipientId) : null;
+        const alreadyExists = dateItemMap[record.dueDate]?.some(
+          (item) => item.status === 'REJECTED' && item.intention?.id === record.intentionId
+        );
+        if (!alreadyExists) {
+          addItemToDate(record.dueDate, {
+            id: `rej-${record.occurrenceId}`,
+            type: 'intention',
+            status: 'REJECTED',
+            amount: matchingIntent?.amount || 0,
+            tokenSymbol: matchingIntent?.tokenSymbol || 'ETH',
+            recipientName: recipient?.name || 'Unknown Recipient',
+            recipientAddress: recipient?.address || '',
+            intention: matchingIntent,
+            isProjected: false,
+          });
+        }
+      }
+    }
+  });
+
   const selectedItems = dateItemMap[selectedDateStr] || [];
 
   return (
@@ -158,27 +191,27 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-            <CalendarDays className="w-5 h-5 text-emerald-400" />
+          <h2 className="text-xl font-bold tracking-tight text-jexi-primary flex items-center gap-2">
+            <CalendarDays className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             Payment Calendar
           </h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
+          <p className="text-xs text-jexi-muted mt-0.5">
             Your scheduled payments at a glance.
           </p>
         </div>
       </div>
 
       {/* Month Navigator */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xs">
+      <div className="bg-jexi-surface border border-jexi-subtle rounded-2xl p-4 shadow-xs">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-zinc-100 text-sm">
+          <h3 className="font-bold text-jexi-primary text-sm">
             {monthName} {year}
           </h3>
           <div className="flex items-center gap-1">
             <button
               onClick={prevMonth}
               aria-label="Previous month"
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+              className="p-1.5 rounded-lg text-jexi-muted hover:text-jexi-primary hover:bg-jexi-hover transition-colors cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -188,14 +221,14 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 setSelectedDateStr(getTodayDateString());
               }}
               title="Return to today"
-              className="px-2.5 py-1 text-xs text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors font-medium border border-zinc-800"
+              className="px-2.5 py-1 text-xs text-jexi-secondary hover:text-jexi-primary hover:bg-jexi-hover rounded-lg transition-colors font-medium border border-jexi-subtle cursor-pointer"
             >
               Today
             </button>
             <button
               onClick={nextMonth}
               aria-label="Next month"
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+              className="p-1.5 rounded-lg text-jexi-muted hover:text-jexi-primary hover:bg-jexi-hover transition-colors cursor-pointer"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -203,21 +236,21 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         </div>
 
         {/* Day of Week Headers */}
-        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-zinc-500 mb-1.5">
-          <div>Sun</div>
-          <div>Mon</div>
-          <div>Tue</div>
-          <div>Wed</div>
-          <div>Thu</div>
-          <div>Fri</div>
-          <div>Sat</div>
+        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-jexi-muted mb-1.5">
+          <div className="min-w-0 truncate"><span className="sm:hidden">S</span><span className="hidden sm:inline">Sun</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">M</span><span className="hidden sm:inline">Mon</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">T</span><span className="hidden sm:inline">Tue</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">W</span><span className="hidden sm:inline">Wed</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">T</span><span className="hidden sm:inline">Thu</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">F</span><span className="hidden sm:inline">Fri</span></div>
+          <div className="min-w-0 truncate"><span className="sm:hidden">S</span><span className="hidden sm:inline">Sat</span></div>
         </div>
 
         {/* Calendar Grid */}
         <div className="grid grid-cols-7 gap-1">
           {/* Empty prefix slots */}
           {Array.from({ length: firstDayOfMonth }).map((_, i) => (
-            <div key={`empty-${i}`} className="h-10 sm:h-12 rounded-lg bg-zinc-950/20" />
+            <div key={`empty-${i}`} className="h-10 sm:h-12 rounded-lg bg-jexi-elevated/40 min-w-0" />
           ))}
 
           {/* Days of current month */}
@@ -233,40 +266,43 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             const hasDueToday = !hasOverdue && dayItems.some((item) => item.status === 'DUE_TODAY');
             const hasUpcoming = !hasOverdue && !hasDueToday && dayItems.some((item) => item.status === 'UPCOMING');
             const hasCompleted = !hasOverdue && !hasDueToday && !hasUpcoming && dayItems.some((item) => item.status === 'COMPLETED');
-            const hasPaused = !hasOverdue && !hasDueToday && !hasUpcoming && !hasCompleted && dayItems.some((item) => item.status === 'PAUSED');
+            const hasRejected = !hasOverdue && !hasDueToday && !hasUpcoming && !hasCompleted && dayItems.some((item) => item.status === 'REJECTED');
+            const hasPaused = !hasOverdue && !hasDueToday && !hasUpcoming && !hasCompleted && !hasRejected && dayItems.some((item) => item.status === 'PAUSED');
 
-            let cellClass = 'h-10 sm:h-12 rounded-lg p-1 text-left relative flex flex-col justify-between transition-all ';
+            let cellClass = 'h-10 sm:h-12 rounded-lg p-0.5 sm:p-1 text-left relative flex flex-col justify-between transition-all cursor-pointer min-w-0 overflow-hidden ';
             if (isSelected && isToday) {
-              cellClass += 'bg-emerald-500/20 border-2 border-emerald-400 ring-2 ring-emerald-500/30 text-emerald-200';
+              cellClass += 'bg-emerald-50 dark:bg-emerald-500/20 border-2 border-emerald-600 dark:border-emerald-400 ring-2 ring-emerald-500/20 text-emerald-800 dark:text-emerald-200';
             } else if (isSelected) {
-              cellClass += 'bg-zinc-800/90 border-2 border-emerald-500/80 text-zinc-100 ring-1 ring-emerald-500/30';
+              cellClass += 'bg-jexi-elevated border-2 border-emerald-600 dark:border-emerald-500 text-jexi-primary ring-1 ring-emerald-500/20';
             } else if (isToday) {
-              cellClass += 'bg-zinc-850 border border-amber-500/60 text-zinc-100 shadow-xs';
+              cellClass += 'bg-amber-50/80 dark:bg-amber-500/10 border border-amber-400 dark:border-amber-500/60 text-jexi-primary shadow-xs';
             } else {
-              cellClass += 'bg-zinc-950/60 hover:bg-zinc-900 border border-zinc-900 text-zinc-400';
+              cellClass += 'bg-jexi-surface hover:bg-jexi-hover border border-jexi-subtle text-jexi-secondary';
             }
 
             const dotClass = hasOverdue
               ? 'bg-rose-500 shadow-xs'
               : hasDueToday
-              ? 'bg-amber-400 animate-pulse'
+              ? 'bg-amber-500 dark:bg-amber-400 animate-pulse'
               : hasUpcoming
-              ? 'bg-emerald-400'
+              ? 'bg-emerald-600 dark:bg-emerald-400'
               : hasCompleted
-              ? 'bg-zinc-500'
+              ? 'bg-jexi-muted'
+              : hasRejected
+              ? 'bg-rose-400/60 dark:bg-rose-500/60'
               : hasPaused
-              ? 'bg-zinc-600'
+              ? 'bg-jexi-muted'
               : '';
 
             const labelClass = hasOverdue
-              ? 'text-rose-400'
+              ? 'text-rose-600 dark:text-rose-400'
               : hasDueToday
-              ? 'text-amber-400'
+              ? 'text-amber-700 dark:text-amber-400'
               : hasUpcoming
-              ? 'text-emerald-400'
+              ? 'text-emerald-700 dark:text-emerald-400'
               : hasCompleted
-              ? 'text-zinc-400'
-              : 'text-zinc-500';
+              ? 'text-jexi-muted'
+              : 'text-jexi-muted';
 
             return (
               <button
@@ -275,10 +311,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 className={cellClass}
               >
                 <div className="flex items-center justify-between w-full">
-                  <span className={`text-[11px] font-semibold flex items-center gap-1 ${isToday ? 'text-amber-400 font-bold' : ''}`}>
+                  <span className={`text-[11px] font-semibold flex items-center gap-1 ${isToday ? 'text-amber-700 dark:text-amber-400 font-bold' : ''}`}>
                     {dayNum}
                     {isToday && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Today" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400" title="Today" />
                     )}
                   </span>
                   {dayItems.length > 0 && (
@@ -287,7 +323,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 </div>
 
                 {dayItems.length > 0 && (
-                  <div className={`text-[9px] font-bold truncate ${labelClass}`}>
+                  <div className={`text-[8px] sm:text-[9px] font-bold truncate w-full ${labelClass}`}>
                     {hasOverdue ? (
                       <span className="flex items-center gap-0.5">
                         <span className="w-1 h-1 rounded-full bg-rose-500 shrink-0" />
@@ -297,7 +333,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                       </span>
                     ) : hasDueToday ? (
                       <span className="flex items-center gap-0.5">
-                        <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />
+                        <span className="w-1 h-1 rounded-full bg-amber-500 dark:bg-amber-400 shrink-0" />
                         {dayItems.length === 1
                           ? `${dayItems[0].amount} ${dayItems[0].tokenSymbol.split(' ')[1] || dayItems[0].tokenSymbol}`
                           : `${dayItems.length} txs`}
@@ -320,11 +356,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
       </div>
 
       {/* Selected Day Details Panel */}
-      <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-4 shadow-xs">
-        <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+      <div className="bg-jexi-surface border border-jexi-subtle rounded-2xl p-4 shadow-xs">
+        <div className="flex items-center justify-between pb-3 border-b border-jexi-divider">
           <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-400" />
-            <h4 className="text-xs font-bold text-zinc-200 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <h4 className="text-xs font-bold text-jexi-primary flex items-center gap-2">
               <span>
                 {new Date(selectedDateStr + 'T00:00:00').toLocaleDateString('en-US', {
                   weekday: 'short',
@@ -334,24 +370,24 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 })}
               </span>
               {selectedDateStr === todayStr ? (
-                <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/40 uppercase">
+                <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-bold border border-amber-200 dark:border-amber-500/40 uppercase">
                   Today
                 </span>
               ) : (
-                <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-medium border border-zinc-700">
+                <span className="px-1.5 py-0.5 rounded bg-jexi-elevated text-jexi-muted text-[10px] font-medium border border-jexi-subtle">
                   Selected Date
                 </span>
               )}
             </h4>
           </div>
-          <span className="text-xs text-zinc-400">
+          <span className="text-xs text-jexi-muted">
             {selectedItems.length} item{selectedItems.length === 1 ? '' : 's'}
           </span>
         </div>
 
         <div className="mt-3 space-y-2.5">
           {selectedItems.length === 0 ? (
-            <p className="text-xs text-zinc-500 py-3 text-center">
+            <p className="text-xs text-jexi-muted py-3 text-center">
               No payments scheduled or executed for this date.
             </p>
           ) : (
@@ -361,28 +397,28 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 return (
                   <div
                     key={item.id}
-                    className="p-3 rounded-xl border border-zinc-800/80 bg-zinc-950/60 text-zinc-300 flex items-center justify-between gap-3"
+                    className="p-3 rounded-xl border border-jexi-subtle bg-jexi-elevated/50 text-jexi-secondary flex items-center justify-between gap-3"
                   >
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-xs text-zinc-100">
+                        <span className="font-bold text-xs text-jexi-primary">
                           {item.amount} {item.tokenSymbol}
                         </span>
-                        <span className="text-xs text-zinc-400">→</span>
-                        <span className="text-xs font-semibold text-zinc-200">{item.recipientName}</span>
-                        <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 text-[9px] font-bold rounded border border-emerald-500/30 uppercase flex items-center gap-1">
+                        <span className="text-xs text-jexi-muted">→</span>
+                        <span className="text-xs font-semibold text-jexi-secondary">{item.recipientName}</span>
+                        <span className="px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-[9px] font-bold rounded border border-emerald-200 dark:border-emerald-500/30 uppercase flex items-center gap-1">
                           <CheckCircle className="w-2.5 h-2.5" />
                           COMPLETED
                         </span>
                       </div>
-                      <p className="text-[10px] text-zinc-400 mt-0.5">
+                      <p className="text-[10px] text-jexi-muted mt-0.5">
                         Executed on {hist.confirmedAt.split('T')[0]} •{' '}
-                        <span className="font-mono text-zinc-500">
+                        <span className="font-mono text-jexi-muted">
                           {hist.txHash ? `${hist.txHash.substring(0, 10)}...` : 'Simulated'}
                         </span>
                       </p>
                     </div>
-                    <span className="text-[11px] font-medium text-zinc-500">In History</span>
+                    <span className="text-[11px] font-medium text-jexi-muted">In History</span>
                   </div>
                 );
               }
@@ -399,57 +435,71 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                   key={item.id}
                   className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
                     isOverdue
-                      ? 'bg-rose-950/20 border-rose-500/50 text-rose-200'
+                      ? 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-200 dark:border-rose-500/50 text-rose-900 dark:text-rose-200'
                       : isDueToday
-                      ? 'bg-amber-950/20 border-amber-500/40 text-amber-200'
+                      ? 'bg-amber-50/80 dark:bg-amber-950/20 border-amber-200 dark:border-amber-500/40 text-amber-900 dark:text-amber-200'
                       : isPaused
-                      ? 'bg-zinc-950/40 border-zinc-800 text-zinc-400'
-                      : 'bg-zinc-950 border-zinc-800/80 text-zinc-300'
+                      ? 'bg-jexi-elevated/40 border-jexi-subtle text-jexi-muted'
+                      : 'bg-jexi-surface border-jexi-subtle text-jexi-secondary'
                   }`}
                 >
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-xs text-zinc-100">
+                      <span className="font-bold text-xs text-jexi-primary">
                         {intent.amount} {intent.tokenSymbol}
                       </span>
-                      <span className="text-xs text-zinc-400">→</span>
-                      <span className="text-xs font-semibold text-emerald-400">{item.recipientName}</span>
+                      <span className="text-xs text-jexi-muted">→</span>
+                      <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">{item.recipientName}</span>
+                      {item.status === 'COMPLETED' && (
+                        <span className="px-1.5 py-0.5 bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold rounded border border-emerald-200 dark:border-emerald-500/40 uppercase">
+                          COMPLETED
+                        </span>
+                      )}
                       {isOverdue && (
-                        <span className="px-1.5 py-0.5 bg-rose-500/20 text-rose-300 text-[9px] font-extrabold rounded border border-rose-500/40 uppercase">
+                        <span className="px-1.5 py-0.5 bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 text-[9px] font-extrabold rounded border border-rose-200 dark:border-rose-500/40 uppercase">
                           OVERDUE ({getDaysOverdue(intent)}d)
                         </span>
                       )}
                       {isDueToday && (
-                        <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-[9px] font-bold rounded border border-amber-500/40 uppercase">
+                        <span className="px-1.5 py-0.5 bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 text-[9px] font-bold rounded border border-amber-200 dark:border-amber-500/40 uppercase">
                           DUE TODAY
                         </span>
                       )}
                       {isPaused && (
-                        <span className="px-1.5 py-0.5 bg-zinc-800 text-zinc-400 text-[9px] font-medium rounded border border-zinc-700 uppercase flex items-center gap-1">
+                        <span className="px-1.5 py-0.5 bg-jexi-elevated text-jexi-muted text-[9px] font-medium rounded border border-jexi-subtle uppercase flex items-center gap-1">
                           <PauseCircle className="w-2.5 h-2.5" />
                           PAUSED
                         </span>
                       )}
-                      {!isOverdue && !isDueToday && !isPaused && (
-                        <span className="px-1.5 py-0.5 bg-zinc-800 text-zinc-400 text-[9px] font-medium rounded border border-zinc-700 uppercase">
+                      {item.status === 'REJECTED' && (
+                        <span className="px-1.5 py-0.5 bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 text-[9px] font-semibold rounded border border-rose-200 dark:border-rose-500/30 uppercase">
+                          REJECTED
+                        </span>
+                      )}
+                      {!isOverdue && !isDueToday && !isPaused && item.status !== 'COMPLETED' && item.status !== 'REJECTED' && (
+                        <span className="px-1.5 py-0.5 bg-jexi-elevated text-jexi-muted text-[9px] font-medium rounded border border-jexi-subtle uppercase">
                           {item.isProjected ? 'UPCOMING (Projected)' : 'UPCOMING'}
                         </span>
                       )}
                     </div>
-                    <p className="text-[10px] text-zinc-400 mt-0.5">
-                      {formatScheduleCadence(intent)} • <span className="font-mono text-zinc-500">{item.recipientAddress.substring(0, 8)}...</span>
+                    <p className="text-[10px] text-jexi-muted mt-0.5">
+                      {formatScheduleCadence(intent)} • <span className="font-mono text-jexi-muted">{item.recipientAddress.substring(0, 8)}...</span>
                     </p>
                   </div>
 
-                  {!isPaused ? (
+                  {item.status === 'COMPLETED' ? (
+                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">Completed</span>
+                  ) : item.status === 'REJECTED' ? (
+                    <span className="text-[11px] text-rose-600 dark:text-rose-400 font-semibold">Rejected</span>
+                  ) : !isPaused ? (
                     <button
                       onClick={() => onPrepareTransaction(intent)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
                         isOverdue
-                          ? 'bg-rose-500 hover:bg-rose-400 text-white shadow-md'
+                          ? 'bg-rose-600 hover:bg-rose-500 text-white'
                           : isDueToday
-                          ? 'bg-amber-400 hover:bg-amber-300 text-zinc-950 shadow-md'
-                          : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950'
+                          : 'bg-jexi-elevated hover:bg-jexi-hover text-jexi-primary border border-jexi-subtle'
                       }`}
                     >
                       <ShieldCheck className="w-3.5 h-3.5" />
@@ -457,7 +507,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                       <ArrowRight className="w-3 h-3" />
                     </button>
                   ) : (
-                    <span className="text-[11px] text-zinc-500 italic">Paused</span>
+                    <span className="text-[11px] text-jexi-muted italic">Paused</span>
                   )}
                 </div>
               );

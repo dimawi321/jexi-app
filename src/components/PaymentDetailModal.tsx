@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Shield, Clock, Copy, Check, ExternalLink, ArrowRight, CheckCircle2, AlertTriangle, Calendar } from 'lucide-react';
+import { Shield, Clock, Copy, Check, ExternalLink, ArrowRight, CheckCircle2, AlertTriangle, Calendar, XCircle } from 'lucide-react';
 import { PaymentIntention, Recipient } from '../types';
-import { SUPPORTED_NETWORKS, getTodayDateString } from '../constants';
+import { SUPPORTED_NETWORKS, getTodayDateString, formatTokenSymbol } from '../constants';
 import { getIntentionStatus, getDaysOverdue, formatScheduleCadence } from '../utils/scheduler';
 
 interface PaymentDetailModalProps {
@@ -20,6 +20,9 @@ export const PaymentDetailModal: React.FC<PaymentDetailModalProps> = ({
   const [copied, setCopied] = useState(false);
   const todayStr = getTodayDateString();
   const status = getIntentionStatus(intention);
+  const isCompleted = status === 'COMPLETED';
+  const isRejected = status === 'REJECTED';
+  const isPaused = status === 'PAUSED';
   const isOverdue = status === 'OVERDUE';
   const isDueToday = status === 'DUE_TODAY';
   const daysOverdue = isOverdue ? getDaysOverdue(intention) : 0;
@@ -32,16 +35,16 @@ export const PaymentDetailModal: React.FC<PaymentDetailModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
+    <div className="fixed inset-0 z-50 bg-jexi-overlay backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-jexi-modal border border-jexi-subtle rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto text-jexi-primary">
+        <div className="flex items-center justify-between pb-3 border-b border-jexi-subtle">
           <div className="flex items-center gap-2">
-            <Shield className="w-5 h-5 text-emerald-400" />
-            <h3 className="text-base font-bold text-zinc-100">Payment Intention Details</h3>
+            <Shield className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            <h3 className="text-base font-bold text-jexi-primary">Payment Intention Details</h3>
           </div>
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-zinc-200 p-1 text-sm font-semibold"
+            className="text-jexi-muted hover:text-jexi-primary p-1 text-sm font-semibold cursor-pointer"
           >
             ✕
           </button>
@@ -50,87 +53,109 @@ export const PaymentDetailModal: React.FC<PaymentDetailModalProps> = ({
         {/* Status Indicator */}
         <div
           className={`p-3 rounded-xl border flex items-center justify-between ${
-            isOverdue
-              ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+            isCompleted
+              ? 'bg-emerald-50 dark:bg-emerald-500/15 border-emerald-200 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
+              : isRejected
+              ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-200 dark:border-rose-500/40 text-rose-800 dark:text-rose-300'
+              : isOverdue
+              ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-200 dark:border-rose-500/40 text-rose-800 dark:text-rose-300'
               : isDueToday
-              ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-              : 'bg-zinc-950 border-zinc-800 text-zinc-300'
+              ? 'bg-amber-50 dark:bg-amber-500/15 border-amber-200 dark:border-amber-500/40 text-amber-900 dark:text-amber-300'
+              : isPaused
+              ? 'bg-zinc-100 dark:bg-zinc-800/50 border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400'
+              : 'bg-jexi-elevated border-jexi-subtle text-jexi-secondary'
           }`}
         >
           <div className="flex items-center gap-2 text-xs font-semibold">
-            {isOverdue ? (
-              <AlertTriangle className="w-4 h-4 text-rose-400" />
+            {isCompleted ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            ) : isRejected ? (
+              <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+            ) : isOverdue ? (
+              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
             ) : isDueToday ? (
-              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             ) : (
-              <Clock className="w-4 h-4 text-sky-400" />
+              <Clock className="w-4 h-4 text-sky-600 dark:text-sky-400" />
             )}
             <span>
               Status:{' '}
-              {isOverdue
+              {isCompleted
+                ? 'COMPLETED (TERMINAL)'
+                : isRejected
+                ? 'REJECTED (TERMINAL)'
+                : isOverdue
                 ? `OVERDUE (by ${daysOverdue} day${daysOverdue === 1 ? '' : 's'})`
                 : isDueToday
                 ? 'DUE TODAY'
+                : isPaused
+                ? 'PAUSED'
                 : 'SCHEDULED (UPCOMING)'}
             </span>
           </div>
-          <span className="text-xs font-mono font-bold">{intention.nextDueDate}</span>
+          <span className="text-xs font-mono font-bold">
+            {isCompleted && intention.completedAt
+              ? intention.completedAt.split('T')[0]
+              : isRejected && intention.rejectedAt
+              ? intention.rejectedAt.split('T')[0]
+              : intention.nextDueDate}
+          </span>
         </div>
 
         {/* Breakdown Items */}
-        <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-4 space-y-3 text-xs">
-          <div className="flex justify-between items-center pb-2 border-b border-zinc-800/60">
-            <span className="text-zinc-400">Recipient Name</span>
-            <span className="font-semibold text-zinc-100">{recipient.name}</span>
+        <div className="bg-jexi-elevated border border-jexi-subtle rounded-xl p-4 space-y-3 text-xs">
+          <div className="flex justify-between items-center pb-2 border-b border-jexi-divider">
+            <span className="text-jexi-muted">Recipient Name</span>
+            <span className="font-semibold text-jexi-primary">{recipient.name}</span>
           </div>
 
-          <div className="space-y-1 pb-2 border-b border-zinc-800/60">
+          <div className="space-y-1 pb-2 border-b border-jexi-divider">
             <div className="flex justify-between items-center">
-              <span className="text-zinc-400">Wallet Address</span>
+              <span className="text-jexi-muted">Wallet Address</span>
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleCopy}
-                  className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200 transition-colors"
+                  className="p-1 hover:bg-jexi-hover rounded text-jexi-muted hover:text-jexi-primary transition-colors cursor-pointer"
                   title="Copy address"
                 >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
                 <a
-                  href={`${network?.explorerUrl || 'https://sepolia.basescan.org'}/address/${recipient.address}`}
+                  href={`${network?.explorerUrl || 'https://basescan.org'}/address/${recipient.address}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200 transition-colors"
+                  className="p-1 hover:bg-jexi-hover rounded text-jexi-muted hover:text-jexi-primary transition-colors cursor-pointer"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
               </div>
             </div>
-            <p className="font-mono text-[11px] text-zinc-300 break-all bg-zinc-900 px-2 py-1 rounded border border-zinc-800">
+            <p className="font-mono text-[11px] text-jexi-secondary break-all bg-jexi-surface px-2 py-1 rounded border border-jexi-subtle">
               {recipient.address}
             </p>
           </div>
 
-          <div className="flex justify-between items-center pb-2 border-b border-zinc-800/60">
-            <span className="text-zinc-400">Target Network</span>
-            <span className="font-medium text-zinc-200">Base Sepolia (Chain ID 84532)</span>
+          <div className="flex justify-between items-center pb-2 border-b border-jexi-divider">
+            <span className="text-jexi-muted">Target Network</span>
+            <span className="font-medium text-jexi-primary">{network?.name || 'Base'} (Chain ID {network?.chainId || 8453})</span>
           </div>
 
-          <div className="flex justify-between items-center pb-2 border-b border-zinc-800/60">
-            <span className="text-zinc-400">Asset & Amount</span>
-            <span className="font-bold text-emerald-400 text-sm">
-              {intention.amount.toLocaleString()} {intention.tokenSymbol}
+          <div className="flex justify-between items-center pb-2 border-b border-jexi-divider">
+            <span className="text-jexi-muted">Asset & Amount</span>
+            <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm font-mono tabular-nums">
+              {intention.amount.toLocaleString()} {formatTokenSymbol(intention.tokenSymbol)}
             </span>
           </div>
 
-          <div className="flex justify-between items-center pb-2 border-b border-zinc-800/60">
-            <span className="text-zinc-400">Recurring Frequency</span>
-            <span className="capitalize font-medium text-zinc-200">{intention.frequency}</span>
+          <div className="flex justify-between items-center pb-2 border-b border-jexi-divider">
+            <span className="text-jexi-muted">Recurring Frequency</span>
+            <span className="capitalize font-medium text-jexi-primary">{intention.frequency}</span>
           </div>
 
           {intention.notes && (
             <div className="pt-1">
-              <span className="text-zinc-400 block mb-1">Note / Memo:</span>
-              <p className="text-zinc-300 italic bg-zinc-900 p-2 rounded border border-zinc-800/60">
+              <span className="text-jexi-muted block mb-1">Note / Memo:</span>
+              <p className="text-jexi-secondary italic bg-jexi-surface p-2 rounded border border-jexi-subtle">
                 "{intention.notes}"
               </p>
             </div>
@@ -138,31 +163,33 @@ export const PaymentDetailModal: React.FC<PaymentDetailModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-2 pt-2">
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-jexi-divider">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+            className="px-4 py-2 rounded-lg bg-jexi-elevated hover:bg-jexi-hover text-jexi-secondary border border-jexi-subtle text-xs font-medium transition-colors cursor-pointer"
           >
             Close
           </button>
 
-          <button
-            onClick={() => {
-              onClose();
-              onPrepareTransaction(intention);
-            }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-md ${
-              isOverdue
-                ? 'bg-rose-500 hover:bg-rose-400 text-white'
-                : isDueToday
-                ? 'bg-amber-400 hover:bg-amber-300 text-zinc-950'
-                : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
-            }`}
-          >
-            <Shield className="w-4 h-4" />
-            <span>Prepare Transaction</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          {!isCompleted && !isPaused && !isRejected && (
+            <button
+              onClick={() => {
+                onClose();
+                onPrepareTransaction(intention);
+              }}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer ${
+                isOverdue
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                  : isDueToday
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              <span>Prepare Payment</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>

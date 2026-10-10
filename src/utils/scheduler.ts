@@ -3,8 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { PaymentIntention, ScheduleFrequency } from '../types';
+import { PaymentIntention, ScheduleFrequency, CompletedTransactionRecord } from '../types';
 import { getTodayDateString } from '../constants';
+
+/**
+ * Deterministic payment occurrence ID generator.
+ * Identity formula: occ_<intentionId>_<dueDate>
+ */
+export function getOccurrenceId(intentionId: string, dueDate: string): string {
+  const cleanDue = dueDate ? dueDate.trim() : getTodayDateString();
+  return `occ_${intentionId}_${cleanDue}`;
+}
 
 export const WEEKDAYS = [
   { index: 0, name: 'Sunday', short: 'Sun' },
@@ -156,11 +165,13 @@ export function computeNextDueDate(
   }
 }
 
-export type PaymentStatus = 'OVERDUE' | 'DUE_TODAY' | 'UPCOMING' | 'PAUSED';
+export type PaymentStatus = 'OVERDUE' | 'DUE_TODAY' | 'UPCOMING' | 'PAUSED' | 'COMPLETED' | 'REJECTED';
 
 /**
  * Authoritative single-engine status calculation based on current date & time.
  * For every active payment intention:
+ * - Rejected one-time intention = REJECTED (terminal)
+ * - Completed one-time intention = COMPLETED (terminal)
  * - Future scheduled date/time = UPCOMING
  * - Scheduled date/time is today and due time has arrived = DUE TODAY
  * - Scheduled date/time has passed without execution or skipping = OVERDUE
@@ -170,6 +181,22 @@ export function getIntentionStatus(
   intention: PaymentIntention,
   referenceDate?: Date
 ): PaymentStatus {
+  // Terminal rejected check: rejected one-time intentions are permanently terminal
+  if (
+    intention.isRejected ||
+    (intention.frequency === 'once' && (intention.isRejected || !!intention.rejectedAt))
+  ) {
+    return 'REJECTED';
+  }
+
+  // Terminal completed check: completed one-time intentions are permanently terminal
+  if (
+    intention.isCompleted ||
+    (intention.frequency === 'once' && (intention.isCompleted || !!intention.completedAt))
+  ) {
+    return 'COMPLETED';
+  }
+
   if (!intention.active) {
     return 'PAUSED';
   }
@@ -196,18 +223,51 @@ export function getIntentionStatus(
     return 'UPCOMING';
   }
 
-  // targetDateStr === todayStr (Scheduled for today)
-  if (intention.scheduleTime) {
-    // If due time has arrived or passed today -> DUE TODAY
-    if (currentTimeStr >= intention.scheduleTime) {
-      return 'DUE_TODAY';
-    }
-    // Scheduled for later today -> UPCOMING
-    return 'UPCOMING';
+  // targetDateStr === todayStr (Scheduled for today) -> DUE_TODAY
+  return 'DUE_TODAY';
+}
+
+/**
+ * Determines whether the current (or reference) time is strictly before an intention's scheduled datetime.
+ *
+ * Used exclusively for Early Execution confirmation decisions:
+ * - Case 1: Future date (nextDueDate > today) -> TRUE
+ * - Case 2: Today before scheduled time (nextDueDate === today && currentTime < scheduleTime) -> TRUE
+ * - Case 3: Today at or after scheduled time (nextDueDate === today && currentTime >= scheduleTime) -> FALSE
+ * - Case 4: Past date (nextDueDate < today) -> FALSE
+ */
+export function isBeforeScheduledDatetime(
+  intention: PaymentIntention,
+  referenceDate?: Date
+): boolean {
+  if (!intention || !intention.nextDueDate) return false;
+
+  const now = referenceDate || new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const todayStr = `${year}-${month}-${day}`;
+
+  const currentHours = String(now.getHours()).padStart(2, '0');
+  const currentMinutes = String(now.getMinutes()).padStart(2, '0');
+  const currentTimeStr = `${currentHours}:${currentMinutes}`;
+
+  const targetDateStr = intention.nextDueDate;
+
+  if (targetDateStr > todayStr) {
+    return true;
   }
 
-  // If no specific scheduleTime provided, it is due today
-  return 'DUE_TODAY';
+  if (targetDateStr < todayStr) {
+    return false;
+  }
+
+  // targetDateStr === todayStr
+  if (intention.scheduleTime) {
+    return currentTimeStr < intention.scheduleTime;
+  }
+
+  return false;
 }
 
 /**
@@ -451,4 +511,44 @@ export function getOccurrencesForMonth(
   }
 
   return Array.from(occurrences).sort();
+}
+
+/**
+ * Reconciles payment intentions with historical completed transactions.
+ * Guarantees that any one-time intention with a matching confirmed transaction
+ * or isCompleted flag is permanently marked as terminal COMPLETED (isCompleted: true, active: false).
+ */
+export function reconcileCompletedIntentions(
+  intentions: PaymentIntention[],
+  history?: CompletedTransactionRecord[]
+): PaymentIntention[] {
+  if (!intentions || intentions.length === 0) return [];
+  const completedIntentionIds = new Set(
+    (history || [])
+      .filter((h) => h.status === 'CONFIRMED_ON_CHAIN' || (h.isSimulation && h.status !== 'FAILED_ON_CHAIN'))
+      .map((h) => h.intentionId)
+      .filter(Boolean)
+  );
+
+  return intentions.map((intent) => {
+    if (
+      intent.frequency === 'once' &&
+      (intent.isCompleted || !!intent.completedAt || completedIntentionIds.has(intent.id))
+    ) {
+      const match = (history || []).find(
+        (h) => h.intentionId === intent.id && (h.status === 'CONFIRMED_ON_CHAIN' || h.isSimulation)
+      );
+      return {
+        ...intent,
+        active: false,
+        isCompleted: true,
+        completedAt:
+          intent.completedAt ||
+          match?.confirmedAt ||
+          intent.lastCheckedAt ||
+          new Date().toISOString(),
+      };
+    }
+    return intent;
+  });
 }

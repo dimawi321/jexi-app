@@ -13,13 +13,14 @@ import {
   X,
   Info,
 } from 'lucide-react';
-import { TestnetWalletBalance } from '../storage/storage';
+import { ConnectedWalletBalance } from '../lib/balance';
 import { UserAccount } from '../types';
 import { SyncStatus } from '../lib/firestoreSync';
 import { WalletState } from '../lib/wallet';
+import { BASE_MAINNET_CHAIN_ID } from '../constants';
 
 interface HeaderProps {
-  balance: TestnetWalletBalance;
+  walletBalance: ConnectedWalletBalance;
   onRefresh: () => void;
   onResetDemo?: () => void;
   currentUser: UserAccount | null;
@@ -32,7 +33,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  balance,
+  walletBalance,
   onRefresh,
   currentUser,
   onOpenAccount,
@@ -62,49 +63,78 @@ export const Header: React.FC<HeaderProps> = ({
     : null;
 
   return (
-    <header className="sticky top-0 z-40 bg-zinc-900/95 backdrop-blur-md border-b border-zinc-800 text-zinc-100 w-full overflow-hidden">
-      <div className="max-w-4xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
-        {/* Brand */}
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold shadow-xs shrink-0">
-            <ShieldCheck className="w-5 h-5" />
+    <header className="sticky top-0 z-40 bg-jexi-surface/90 backdrop-blur-md border-b border-jexi-subtle text-jexi-primary w-full max-w-full overflow-x-hidden transition-colors">
+      <div className="max-w-5xl mx-auto px-2 sm:px-6 py-2 sm:py-3 flex items-center justify-between gap-1 sm:gap-3 w-full">
+        {/* Brand Zone - Clean single wordmark */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-jexi-elevated border border-jexi-subtle flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+            <ShieldCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="font-bold tracking-tight text-lg text-zinc-100">JEXI</span>
-              <span className="text-[10px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700/60 hidden sm:inline-block">
-                Self-Custody
-              </span>
-            </div>
-            <p className="text-[11px] text-zinc-400 hidden sm:block">Scheduled Payments & Transaction Preparation</p>
-          </div>
+          <span className="font-bold tracking-tight text-sm sm:text-lg text-jexi-primary">
+            JEXI
+          </span>
         </div>
 
-        {/* Testnet & Balance Badge & Actions */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Right Zone - Actions & Status */}
+        <div className="flex items-center gap-1 sm:gap-2 shrink min-w-0 flex-nowrap">
           {/* Network tag or Wrong Network Button */}
-          {walletState.isConnected && walletState.isWrongNetwork ? (
+          {!walletState.isConnected || !walletState.address ? (
+            <div
+              title="No wallet connected"
+              className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-jexi-elevated border border-jexi-subtle text-jexi-muted text-xs font-medium shrink-0"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-zinc-500 shrink-0" />
+              <span>Not Connected</span>
+            </div>
+          ) : walletState.isWrongNetwork ? (
             <button
               onClick={onSwitchNetwork}
-              title="Click to switch wallet network to Base Sepolia"
-              className="flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1 rounded-md bg-rose-500/15 border border-rose-500/40 text-rose-300 hover:bg-rose-500/25 text-xs font-medium shrink-0 transition-colors animate-pulse"
+              title="Click to switch wallet network to Base"
+              className="flex items-center gap-1 px-1.5 sm:px-2.5 py-1 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-300 hover:bg-rose-500/20 text-xs font-medium shrink-0 transition-colors cursor-pointer"
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="hidden sm:inline">Switch to</span>
-              <span>Base Sepolia</span>
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
+              <span className="text-[10px] sm:text-xs">
+                <span className="hidden sm:inline">Switch to </span>Base
+              </span>
             </button>
           ) : (
-            <div className="flex items-center gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium shrink-0">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
-              <span className="hidden sm:inline">Base Sepolia</span>
-              <span className="text-[10px] font-mono opacity-80">Testnet</span>
+            <div
+              title="Connected network: Base"
+              className="flex items-center gap-1 px-1.5 sm:px-2.5 py-1 rounded-lg bg-jexi-elevated border border-jexi-subtle text-jexi-secondary text-xs font-medium shrink-0"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 shrink-0" />
+              <span className="text-[10px] sm:text-xs">
+                Base
+              </span>
             </div>
           )}
 
-          {/* Test Balance Display */}
-          <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md bg-zinc-800/80 border border-zinc-700 text-xs text-zinc-300 shrink-0">
-            <Wallet className="w-3.5 h-3.5 text-zinc-400" />
-            <span>{balance['Test USDC'].toLocaleString()} <span className="text-zinc-500">USDC</span></span>
+          {/* Balance Display */}
+          <div
+            title={
+              !walletState.isConnected || !walletState.address
+                ? 'Connect wallet to view live balance'
+                : walletBalance?.status === 'loading'
+                ? 'Fetching live on-chain balance...'
+                : walletBalance?.status === 'available'
+                ? `Live on-chain USDC balance for ${walletState.address}`
+                : 'Balance unavailable'
+            }
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-jexi-elevated border border-jexi-subtle text-xs font-mono tabular-nums text-jexi-primary shrink-0"
+          >
+            <span className="text-jexi-muted font-sans text-[11px]">Balance:</span>
+            {!walletState.isConnected || !walletState.address ? (
+              <span className="text-jexi-muted font-sans font-medium">—</span>
+            ) : walletBalance?.status === 'loading' ? (
+              <Loader2 className="w-3 h-3 text-jexi-muted animate-spin" />
+            ) : walletBalance?.status === 'available' && walletBalance.formatted !== null ? (
+              <>
+                <span className="text-jexi-primary font-semibold">{walletBalance.formatted}</span>
+                <span className="text-jexi-muted font-sans text-[11px]">USDC</span>
+              </>
+            ) : (
+              <span className="text-jexi-muted font-sans text-[11px]">—</span>
+            )}
           </div>
 
           {/* Wallet Connection Control */}
@@ -113,32 +143,36 @@ export const Header: React.FC<HeaderProps> = ({
             disabled={walletState.isConnecting}
             title={
               walletState.isConnected
-                ? `Connected: ${walletState.address} (${walletState.isWrongNetwork ? 'Wrong Network' : 'Base Sepolia'})`
+                ? `Connected: ${walletState.address} (${
+                    walletState.isWrongNetwork
+                      ? 'Wrong Network'
+                      : 'Base'
+                  })`
                 : walletState.isAvailable
-                ? 'Connect browser wallet (MetaMask, Coinbase, Rabby, etc.)'
-                : 'No browser wallet detected. If in iframe, open app in new tab.'
+                ? 'Connect MetaMask wallet'
+                : 'No browser wallet detected.'
             }
             aria-label="Connect Wallet"
-            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-md transition-colors text-xs flex items-center gap-1.5 border shadow-xs shrink-0 ${
+            className={`px-1.5 sm:px-2.5 py-1 rounded-lg transition-colors text-xs flex items-center gap-1 sm:gap-1.5 border shrink-0 cursor-pointer ${
               walletState.isConnected
                 ? walletState.isWrongNetwork
-                  ? 'text-rose-300 bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20'
-                  : 'text-teal-300 bg-teal-500/10 border-teal-500/30 hover:bg-teal-500/20'
-                : 'text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border-zinc-800 bg-zinc-900/90'
+                  ? 'text-rose-600 dark:text-rose-300 bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20'
+                  : 'text-jexi-primary bg-jexi-elevated border-jexi-subtle hover:bg-jexi-hover'
+                : 'text-jexi-secondary hover:text-jexi-primary hover:bg-jexi-hover border-jexi-subtle bg-jexi-surface'
             }`}
           >
-            <Wallet className={`w-3.5 h-3.5 shrink-0 ${walletState.isConnected ? 'text-teal-400' : 'text-zinc-400'}`} />
+            <Wallet className={`w-3.5 h-3.5 shrink-0 ${walletState.isConnected ? 'text-emerald-600 dark:text-emerald-400' : 'text-jexi-muted'}`} />
             {walletState.isConnecting ? (
-              <span className="text-[11px] font-semibold flex items-center gap-1">
-                <Loader2 className="w-3 h-3 animate-spin" />
+              <span className="text-[11px] sm:text-xs font-medium flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin text-jexi-muted" />
                 <span className="hidden sm:inline">Connecting...</span>
               </span>
             ) : walletState.isConnected ? (
-              <span className="text-[11px] font-mono font-medium">
+              <span className="text-[11px] sm:text-xs font-mono font-medium truncate max-w-[65px] sm:max-w-none">
                 {shortAddress}
               </span>
             ) : (
-              <span className="text-[11px] font-semibold">
+              <span className="text-[11px] sm:text-xs font-medium whitespace-nowrap">
                 <span className="hidden sm:inline">Connect </span>Wallet
               </span>
             )}
@@ -151,101 +185,108 @@ export const Header: React.FC<HeaderProps> = ({
               currentUser
                 ? `Account: ${currentUser.email} (${
                     syncStatus === 'syncing'
-                      ? 'Syncing to Firestore...'
+                      ? 'Syncing changes...'
                       : syncStatus === 'synced'
-                      ? 'Cloud Synced'
+                      ? 'Cloud backup active'
                       : syncStatus === 'error'
-                      ? 'Sync Error'
+                      ? 'Sync error'
                       : 'Active'
                   })`
-                : 'JEXI Account & Cloud Sync'
+                : 'JEXI Account & Security'
             }
             aria-label="JEXI Account"
-            className={`p-1.5 sm:px-2.5 sm:py-1 rounded-md transition-colors text-xs flex items-center gap-1.5 border shadow-xs shrink-0 ${
-              currentUser
-                ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
-                : 'text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border-zinc-800 bg-zinc-900/90'
-            }`}
+            className="px-1.5 sm:px-2.5 py-1 rounded-lg transition-colors text-xs flex items-center gap-1 sm:gap-1.5 border border-jexi-subtle bg-jexi-surface hover:bg-jexi-hover text-jexi-primary shrink-0 cursor-pointer"
           >
-            <User className="w-3.5 h-3.5 shrink-0" />
-            <span className="text-[11px] font-semibold max-w-[85px] truncate hidden sm:inline">
+            <User className="w-3.5 h-3.5 text-jexi-muted shrink-0" />
+            <span className="hidden sm:inline text-[11px] sm:text-xs font-medium max-w-[85px] truncate">
               {currentUser ? currentUser.displayName || currentUser.email.split('@')[0] : 'Account'}
             </span>
-            <span className="sm:hidden text-[11px] font-semibold">Account</span>
             {currentUser && (
-              <span className="flex items-center ml-0.5 shrink-0" title={`Firestore Sync: ${syncStatus}`}>
+              <span className="flex items-center shrink-0">
                 {syncStatus === 'syncing' ? (
-                  <Loader2 className="w-3 h-3 text-amber-400 animate-spin" />
+                  <Loader2 className="w-3 h-3 text-amber-500 animate-spin" />
                 ) : syncStatus === 'error' ? (
-                  <AlertCircle className="w-3 h-3 text-red-400" />
+                  <AlertCircle className="w-3 h-3 text-rose-500" />
                 ) : (
-                  <Cloud className="w-3 h-3 text-emerald-400" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
                 )}
               </span>
             )}
           </button>
 
-          {/* Single Authoritative Header Refresh Control */}
+          {/* Header Refresh Control */}
           <button
             onClick={handleRefreshClick}
             disabled={isRefreshing}
-            title={isRefreshing ? 'Refreshing application...' : 'Refresh'}
-            aria-label="Refresh"
-            className="p-1.5 sm:px-2.5 sm:py-1 text-zinc-200 hover:text-emerald-400 hover:bg-zinc-800 disabled:opacity-60 disabled:pointer-events-none rounded-md transition-colors text-xs flex items-center gap-1.5 border border-zinc-800 bg-zinc-900/90 shadow-xs shrink-0"
+            title={isRefreshing ? 'Refreshing application...' : 'Refresh workspace'}
+            aria-label="Refresh workspace"
+            className="p-1 sm:p-1.5 rounded-lg text-jexi-secondary hover:text-jexi-primary hover:bg-jexi-hover disabled:opacity-50 border border-jexi-subtle bg-jexi-surface transition-colors shrink-0 cursor-pointer"
           >
-            <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isRefreshing ? 'animate-spin text-emerald-400' : 'text-emerald-400'}`} />
-            <span className="text-[11px] font-semibold hidden sm:inline">{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-600 dark:text-emerald-400' : ''}`} />
           </button>
         </div>
       </div>
 
-      {/* Testnet Dev Mode Banner */}
-      <div className="bg-amber-950/40 border-t border-b border-amber-800/40 px-3 sm:px-4 py-1 text-center text-[10px] sm:text-[11px] text-amber-200/90 flex items-center justify-center gap-1.5 sm:gap-2">
-        <Cpu className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+      {/* Mobile Live Balance & Identity Bar (Visible on mobile screens) */}
+      <div className="md:hidden flex items-center justify-between px-3 py-1.5 bg-jexi-elevated/70 border-t border-jexi-divider text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="text-jexi-muted text-[10px] uppercase font-sans tracking-wide">Live Balance:</span>
+          {!walletState.isConnected || !walletState.address ? (
+            <span className="text-jexi-muted font-sans font-medium text-[11px]">—</span>
+          ) : walletBalance?.status === 'loading' ? (
+            <span className="flex items-center gap-1 text-[11px] text-jexi-muted">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>Fetching on-chain...</span>
+            </span>
+          ) : walletBalance?.status === 'available' && walletBalance.formatted !== null ? (
+            <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">
+              {walletBalance.formatted} <span className="text-jexi-muted font-sans font-normal text-[10px]">USDC</span>
+            </span>
+          ) : (
+            <span className="text-rose-500 font-sans text-[11px]">Unavailable</span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 text-[11px] text-jexi-muted">
+          {walletState.isConnected && walletState.address ? (
+            <span className="font-mono text-jexi-primary font-medium">{shortAddress}</span>
+          ) : (
+            <span className="text-[10px] text-jexi-muted">Self-Custody</span>
+          )}
+        </div>
+      </div>
+
+      {/* Subtle Notice Ribbon (Desktop) */}
+      <div className="hidden md:flex bg-jexi-elevated/60 border-t border-jexi-divider px-4 py-1.5 text-center text-xs text-jexi-muted items-center justify-center gap-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
         <span>
-          <strong className="font-semibold text-amber-300">DEVELOPMENT TESTNET MODE:</strong> Offline preparation & simulation only. Ledger hardware signing will be attached in a subsequent stage.
+          Self-Custody · Payment Preparation & Deterministic Safety
         </span>
       </div>
 
-      {/* Wallet Connection Feedback / Preview Environment Notice */}
+      {/* Wallet Connection Notice */}
       {walletState.error && (
-        <div className="bg-zinc-900 border-b border-amber-500/30 px-3 sm:px-4 py-2.5 text-xs text-zinc-200">
-          <div className="max-w-4xl mx-auto flex items-start justify-between gap-3">
-            <div className="flex items-start gap-2.5">
-              <div className="p-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 shrink-0 mt-0.5">
-                <Info className="w-4 h-4" />
+        <div className="bg-amber-50/90 dark:bg-amber-950/40 border-b border-amber-500/30 px-3 sm:px-4 py-2 text-xs text-slate-800 dark:text-slate-200">
+          <div className="max-w-5xl mx-auto flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <div className="p-1 rounded bg-amber-500/15 border border-amber-500/30 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                <Info className="w-3.5 h-3.5" />
               </div>
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold text-amber-300">AI Studio Preview Environment Notice</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
-                    EIP-1193 Sandbox Limit
-                  </span>
+                  <span className="font-semibold text-amber-800 dark:text-amber-300 text-xs">Wallet Connection Notice</span>
                 </div>
-                <p className="text-zinc-300 leading-relaxed text-[11px] sm:text-xs">
-                  Embedded iframes in AI Studio cannot access browser wallet extensions like MetaMask, Rabby, or Coinbase Wallet.
-                  This is a browser sandbox security limitation, <strong className="text-zinc-100">not a JEXI failure</strong>. All payment scheduling and transaction preparation remain fully functional in testnet simulation mode.
+                <p className="text-slate-700 dark:text-zinc-300 leading-relaxed text-[11px]">
+                  {walletState.error}
                 </p>
-                <div className="flex items-center gap-3 pt-1">
-                  <a
-                    href={window.location.href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 text-[11px] font-medium transition-colors"
-                  >
-                    <span>Open in New Tab</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                  <span className="text-[11px] text-zinc-500">or continue testing with the built-in testnet simulator below</span>
-                </div>
               </div>
             </div>
             <button
               onClick={onClearWalletError}
               aria-label="Dismiss wallet notice"
-              className="text-zinc-500 hover:text-zinc-300 p-1 rounded hover:bg-zinc-800 transition-colors shrink-0"
+              className="text-slate-400 hover:text-slate-600 dark:text-zinc-400 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors shrink-0 cursor-pointer"
             >
-              <X className="w-4 h-4" />
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

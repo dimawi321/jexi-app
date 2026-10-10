@@ -1,4 +1,4 @@
-export type NetworkId = 'base-sepolia';
+export type NetworkId = 'base-mainnet';
 
 export interface NetworkConfig {
   id: NetworkId;
@@ -6,7 +6,7 @@ export interface NetworkConfig {
   chainId: number;
   currencySymbol: string;
   explorerUrl: string;
-  isTestnet: true;
+  isTestnet: boolean;
   rpcUrl: string;
 }
 
@@ -49,6 +49,35 @@ export interface PaymentIntention {
   active: boolean;
   createdAt: string;
   lastCheckedAt?: string;
+  isCompleted?: boolean;
+  completedAt?: string;
+  isRejected?: boolean;
+  rejectedAt?: string;
+}
+
+export type TransactionOccurrenceState =
+  | 'SCHEDULED'
+  | 'DUE'
+  | 'PENDING_REVIEW'
+  | 'APPROVED'
+  | 'SIGNING'
+  | 'AUTHORIZED'
+  | 'SUBMITTED'
+  | 'CONFIRMED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'DEFERRED';
+
+export interface PaymentOccurrenceRecord {
+  occurrenceId: string;
+  intentionId: string;
+  dueDate: string;
+  state: TransactionOccurrenceState;
+  updatedAt: string;
+  txHash?: string;
+  blockNumber?: number;
+  error?: string;
+  signingMethod?: string;
 }
 
 export type PaymentLifecycleState =
@@ -63,7 +92,7 @@ export type PaymentLifecycleState =
   | 'rejected'
   | 'failed';
 
-export type PreflightStatus = 'PASS' | 'WARNING' | 'BLOCKED';
+export type PreflightStatus = 'PASS' | 'INFO' | 'WARNING' | 'BLOCKED';
 
 export interface PreflightCheckItem {
   id: string;
@@ -83,6 +112,8 @@ export interface PreflightReport {
 export interface PreparedTransaction {
   id: string;
   intentionId: string;
+  occurrenceId?: string;
+  occurrenceState?: TransactionOccurrenceState;
   recipientId: string;
   recipientName: string;
   recipientAddress: string;
@@ -94,7 +125,9 @@ export interface PreparedTransaction {
   estimatedGas: string;
   preflightReport: PreflightReport;
   status: PaymentLifecycleState;
-  executionMode: 'DEVELOPMENT_TESTNET_SIMULATION';
+  executionMode: 'DEVELOPMENT_TESTNET_SIMULATION' | 'BASE_MAINNET_LIVE_EXECUTION';
+  signerAddress?: string;
+  walletProvider?: string;
   txHash?: string;
   signedAt?: string;
   broadcastAt?: string;
@@ -106,6 +139,8 @@ export interface CompletedTransactionRecord {
   id: string;
   preparedTxId: string;
   intentionId: string;
+  occurrenceId?: string;
+  occurrenceState?: TransactionOccurrenceState;
   recipientId: string;
   recipientName: string;
   recipientAddress: string;
@@ -114,10 +149,12 @@ export interface CompletedTransactionRecord {
   networkId: NetworkId;
   txHash: string;
   confirmedAt: string;
-  executionMode: 'DEVELOPMENT_TESTNET_SIMULATION';
+  executionMode: 'DEVELOPMENT_TESTNET_SIMULATION' | 'BASE_MAINNET_LIVE_EXECUTION';
   isSimulation: boolean;
   isOnChain?: boolean;
   simulatedRefId?: string;
+  status?: 'BROADCAST_SUBMITTED' | 'CONFIRMED_ON_CHAIN' | 'FAILED_ON_CHAIN';
+  blockNumber?: number;
 }
 
 export interface UserAccount {
@@ -131,7 +168,7 @@ export interface UserAccount {
   lastLoginAt: string;
 }
 
-export interface JexiAccountDataPayload {
+export interface SignaAccountDataPayload {
   version: number;
   schemaVersion: '1.0';
   accountId: string;
@@ -142,9 +179,8 @@ export interface JexiAccountDataPayload {
   intentions: PaymentIntention[];
   history: CompletedTransactionRecord[];
   balance: {
-    'Test USDC': number;
-    'Test ETH': number;
-    'Test DAI': number;
+    USDC: number;
+    ETH: number;
   };
   metadata?: {
     client: string;
@@ -152,5 +188,7 @@ export interface JexiAccountDataPayload {
     lastSyncedAt?: string;
   };
 }
+
+export type JexiAccountDataPayload = SignaAccountDataPayload;
 
 export type AppInitState = 'initializing' | 'ready';

@@ -1,0 +1,33 @@
+{
+  "id": "jexi",
+  "name": "JEXI",
+  "url": "https://ais-dev-oxkk3647pmy5iurv6wqpht-229554649127.europe-west2.run.app",
+  "homepageUrl": "https://ais-dev-oxkk3647pmy5iurv6wqpht-229554649127.europe-west2.run.app",
+  "icon": "https://ais-dev-oxkk3647pmy5iurv6wqpht-229554649127.europe-west2.run.app/icon.svg",
+  "platform": "all",
+  "apiVersion": "^2.0.0",
+  "manifestVersion": "2",
+  "branch": "debug",
+  "categories": ["tools"],
+  "currencies": ["base"],
+  "content": {
+    "shortDescription": {
+      "en": "Self-custody crypto payment scheduler and transaction-preparation tool on Base Mainnet."
+    },
+    "description": {
+      "en": "JEXI helps users remember, schedule, prepare and review crypto payments while keeping final transaction authorization with their self-custody wallet or Ledger signer."
+    }
+  },
+  "dapp": {
+    "nanoApp": "Ethereum",
+    "networks": [
+      {
+        "currency": "base",
+        "chainID": 8453,
+        "nodeURL": "https://mainnet.base.org"
+      }
+    ]
+  },
+  "permissions": [],
+  "domains": ["https://"]
+}

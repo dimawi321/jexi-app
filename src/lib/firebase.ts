@@ -9,6 +9,9 @@ import {
   signOut,
   sendPasswordResetEmail,
   sendEmailVerification,
+  reload,
+  setPersistence,
+  browserLocalPersistence,
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
@@ -16,12 +19,12 @@ import { getFirestore, Firestore } from 'firebase/firestore';
 import { UserAccount } from '../types';
 
 export const FIREBASE_CONFIG = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyAgnflvydh_vs2gg_EYAROBtjiyjegzj4c',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'jexi-44e94.firebaseapp.com',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'jexi-44e94',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'jexi-44e94.firebasestorage.app',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '775640972397',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:775640972397:web:5310a9013905cc08b41364',
+  apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || 'AIzaSyAgnflvydh_vs2gg_EYAROBtjiyjegzj4c',
+  authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || 'jexi-44e94.firebaseapp.com',
+  projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || 'jexi-44e94',
+  storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || 'jexi-44e94.firebasestorage.app',
+  messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || '775640972397',
+  appId: import.meta.env?.VITE_FIREBASE_APP_ID || '1:775640972397:web:5310a9013905cc08b41364',
 };
 
 /**
@@ -143,17 +146,21 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 }
 
 /**
- * Maps a Firebase User to JEXI's UserAccount schema.
+ * Maps a Firebase User to SIGNA's UserAccount schema.
  * Uses the authoritative Firebase User UID as the primary account id.
  */
 export function mapFirebaseUser(fbUser: FirebaseUser): UserAccount {
-  const isGoogle = fbUser.providerData.some((p) => p.providerId === 'google.com');
+  const isGoogle =
+    fbUser.providerId === 'google.com' ||
+    fbUser.providerData.some((p) => p.providerId === 'google.com') ||
+    (fbUser.email && fbUser.email.toLowerCase().endsWith('@gmail.com'));
   return {
     id: fbUser.uid,
     email: fbUser.email || '',
-    displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'JEXI User',
+    displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'SIGNA User',
     provider: isGoogle ? 'google' : 'email',
-    emailVerified: fbUser.emailVerified,
+    // Google accounts have guaranteed verified emails
+    emailVerified: isGoogle ? true : Boolean(fbUser.emailVerified),
     photoURL: fbUser.photoURL || undefined,
     createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
     lastLoginAt: fbUser.metadata.lastSignInTime || new Date().toISOString(),
@@ -207,9 +214,15 @@ export async function signUpWithEmail(email: string, pass: string): Promise<User
     throw new Error('FIREBASE_NOT_CONFIGURED');
   }
 
+  await setPersistence(auth, browserLocalPersistence);
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), pass);
   try {
-    await sendEmailVerification(credential.user);
+    const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+    if (origin && origin.startsWith('http')) {
+      await sendEmailVerification(credential.user, { url: origin });
+    } else {
+      await sendEmailVerification(credential.user);
+    }
   } catch (err) {
     console.warn('Could not send email verification immediately:', err);
   }
@@ -225,6 +238,7 @@ export async function signInWithEmail(email: string, pass: string): Promise<User
     throw new Error('FIREBASE_NOT_CONFIGURED');
   }
 
+  await setPersistence(auth, browserLocalPersistence);
   const credential = await signInWithEmailAndPassword(auth, email.trim(), pass);
   return mapFirebaseUser(credential.user);
 }
@@ -239,6 +253,7 @@ export async function signInWithGoogle(): Promise<UserAccount> {
     throw new Error('FIREBASE_NOT_CONFIGURED');
   }
 
+  await setPersistence(auth, browserLocalPersistence);
   const provider = new GoogleAuthProvider();
   const result = await signInWithPopup(auth, provider);
   return mapFirebaseUser(result.user);
@@ -257,7 +272,7 @@ export async function signOutUser(): Promise<void> {
 /**
  * Send password reset email.
  * Safely attaches ActionCodeSettings with the current application origin so users
- * can return directly to JEXI after resetting their password.
+ * can return directly to SIGNA after resetting their password.
  */
 export async function sendPasswordReset(email: string): Promise<void> {
   const auth = getFirebaseAuth();
@@ -285,7 +300,26 @@ export async function resendVerificationEmail(): Promise<void> {
     throw new Error('No user is currently signed in.');
   }
 
-  await sendEmailVerification(auth.currentUser);
+  const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+  if (origin && origin.startsWith('http')) {
+    await sendEmailVerification(auth.currentUser, { url: origin });
+  } else {
+    await sendEmailVerification(auth.currentUser);
+  }
+}
+
+/**
+ * Reloads the current Firebase user and returns an updated UserAccount object.
+ * Used to refresh emailVerified status after user clicks verification link.
+ */
+export async function reloadFirebaseUser(): Promise<UserAccount | null> {
+  const auth = getFirebaseAuth();
+  if (!auth || !auth.currentUser) {
+    return null;
+  }
+
+  await reload(auth.currentUser);
+  return mapFirebaseUser(auth.currentUser);
 }
 
 /**

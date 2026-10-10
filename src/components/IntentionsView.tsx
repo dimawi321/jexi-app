@@ -13,10 +13,11 @@ import {
   SkipForward,
   Info,
   Shield,
+  XCircle,
 } from 'lucide-react';
 import { isAddress, getAddress } from 'viem';
 import { PaymentIntention, Recipient, ScheduleFrequency, NetworkId } from '../types';
-import { SUPPORTED_TOKENS, SUPPORTED_NETWORKS, getTodayDateString } from '../constants';
+import { SUPPORTED_TOKENS, SUPPORTED_NETWORKS, getTodayDateString, formatTokenSymbol } from '../constants';
 import {
   WEEKDAYS,
   formatScheduleCadence,
@@ -25,6 +26,7 @@ import {
   getIntentionStatus,
   getDaysOverdue,
 } from '../utils/scheduler';
+import { SkipConfirmationModal } from './SkipConfirmationModal';
 
 interface IntentionsViewProps {
   intentions: PaymentIntention[];
@@ -62,8 +64,8 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [quickName, setQuickName] = useState('');
   const [quickAddress, setQuickAddress] = useState('');
-  const [quickNetwork, setQuickNetwork] = useState<NetworkId>('base-sepolia');
-  const [quickToken, setQuickToken] = useState('Test USDC');
+  const [quickNetwork, setQuickNetwork] = useState<NetworkId>('base-mainnet');
+  const [quickToken, setQuickToken] = useState('USDC');
   const [quickDefaultAmount, setQuickDefaultAmount] = useState('');
   const [quickNotes, setQuickNotes] = useState('');
   const [quickError, setQuickError] = useState('');
@@ -106,7 +108,7 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
       recipientId: formRecipientId,
       amount: parseFloat(formAmount) || 0,
       tokenSymbol: 'TOKEN',
-      networkId: 'base-sepolia',
+      networkId: 'base-mainnet',
       frequency: formFrequency,
       dueDayOfMonth: formDayOfMonth,
       dueDayOfWeek: formDayOfWeek,
@@ -261,34 +263,34 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
   };
 
   return (
-    <div className="space-y-4">
-      {/* Header & Action */}
-      <div className="flex items-center justify-between gap-3">
+    <div className="space-y-6">
+      {/* Header & Primary Action */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-            <Repeat className="w-5 h-5 text-emerald-400" />
+          <h1 className="text-xl font-bold tracking-tight text-jexi-primary flex items-center gap-2">
+            <Repeat className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             Payment Intentions
-          </h2>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Your scheduled payments ready for review and approval
+          </h1>
+          <p className="text-xs text-jexi-muted mt-1">
+            Deterministic schedules monitored for preflight checks and self-custodial review
           </p>
         </div>
         <button
           onClick={handleOpenAdd}
           disabled={recipients.length === 0}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-950 font-bold text-xs shadow-md transition-all shrink-0"
+          className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 font-semibold text-xs transition-colors shrink-0 cursor-pointer shadow-xs"
         >
           <Plus className="w-4 h-4" />
           <span>New Intention</span>
         </button>
       </div>
 
-      {/* Filter Tabs */}
-      <div className="flex items-center gap-1.5 p-1 bg-zinc-900/90 border border-zinc-800 rounded-xl flex-wrap sm:flex-nowrap">
+      {/* Segmented Filter Control (Functional tabs) */}
+      <div className="flex items-center gap-1 p-1 bg-jexi-elevated border border-jexi-subtle rounded-xl max-w-xl">
         <button
           onClick={() => setFilterMode('all')}
-          className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-semibold transition-all text-center ${
-            filterMode === 'all' ? 'bg-zinc-800 text-zinc-100 shadow-xs' : 'text-zinc-400 hover:text-zinc-200'
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-colors text-center cursor-pointer ${
+            filterMode === 'all' ? 'bg-jexi-surface text-jexi-primary shadow-xs font-semibold' : 'text-jexi-muted hover:text-jexi-primary'
           }`}
         >
           All ({intentions.length})
@@ -296,34 +298,36 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
 
         <button
           onClick={() => setFilterMode('overdue')}
-          className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1 ${
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
             filterMode === 'overdue'
-              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+              ? 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30'
               : overdueCount > 0
-              ? 'text-rose-400 hover:bg-rose-950/20'
-              : 'text-zinc-400 hover:text-zinc-200'
+              ? 'text-rose-600 dark:text-rose-400 hover:text-rose-700'
+              : 'text-jexi-muted hover:text-jexi-primary'
           }`}
         >
-          <AlertTriangle className="w-3.5 h-3.5" />
+          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
           <span>Overdue ({overdueCount})</span>
         </button>
 
         <button
           onClick={() => setFilterMode('due_today')}
-          className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1 ${
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
             filterMode === 'due_today'
-              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-              : 'text-zinc-400 hover:text-zinc-200'
+              ? 'bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30'
+              : dueTodayCount > 0
+              ? 'text-amber-600 dark:text-amber-400 hover:text-amber-700'
+              : 'text-jexi-muted hover:text-jexi-primary'
           }`}
         >
-          <AlertCircle className="w-3.5 h-3.5" />
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
           <span>Due Today ({dueTodayCount})</span>
         </button>
 
         <button
           onClick={() => setFilterMode('upcoming')}
-          className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-semibold transition-all text-center ${
-            filterMode === 'upcoming' ? 'bg-zinc-800 text-zinc-100 shadow-xs' : 'text-zinc-400 hover:text-zinc-200'
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-colors text-center cursor-pointer ${
+            filterMode === 'upcoming' ? 'bg-jexi-surface text-jexi-primary shadow-xs font-semibold' : 'text-jexi-muted hover:text-jexi-primary'
           }`}
         >
           Upcoming ({upcomingCount})
@@ -332,21 +336,21 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
 
       {/* List */}
       {filteredIntentions.length === 0 ? (
-        <div className="p-8 text-center bg-zinc-900/40 border border-dashed border-zinc-800 rounded-xl">
-          <Clock className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-          <p className="text-sm font-medium text-zinc-400">No payment intentions found</p>
-          <p className="text-xs text-zinc-500 mt-1">
+        <div className="p-10 text-center bg-jexi-surface border border-jexi-subtle rounded-2xl">
+          <Clock className="w-8 h-8 text-jexi-muted mx-auto mb-2" />
+          <p className="text-sm font-medium text-jexi-primary">No payment intentions found</p>
+          <p className="text-xs text-jexi-muted mt-1 max-w-sm mx-auto">
             {recipients.length === 0
-              ? 'First add a recipient in Recipient Book, then schedule your payment.'
-              : 'No intentions currently match the selected filter.'}
+              ? 'Add a recipient to your directory first, then create a payment intention.'
+              : 'No payment intentions match the active filter.'}
           </p>
           {recipients.length > 0 && filterMode === 'all' && (
             <button
               onClick={handleOpenAdd}
-              className="mt-3 px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors inline-flex items-center gap-1"
+              className="mt-4 px-3.5 py-2 text-xs font-medium bg-jexi-elevated hover:bg-jexi-hover text-jexi-primary border border-jexi-subtle rounded-xl transition-colors inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              Schedule Payment
+              <span>Schedule Payment</span>
             </button>
           )}
         </div>
@@ -355,6 +359,8 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
           {filteredIntentions.map((intent) => {
             const recipient = recipients.find((r) => r.id === intent.recipientId);
             const status = getIntentionStatus(intent);
+            const isCompleted = status === 'COMPLETED';
+            const isRejected = status === 'REJECTED';
             const isOverdue = status === 'OVERDUE';
             const isDueToday = status === 'DUE_TODAY';
             const daysOverdue = isOverdue ? getDaysOverdue(intent) : 0;
@@ -362,87 +368,95 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
             return (
               <div
                 key={intent.id}
-                className={`p-4 bg-zinc-900/80 border rounded-xl transition-all ${
+                className={`p-5 bg-jexi-surface border rounded-2xl transition-colors shadow-xs ${
                   isOverdue
-                    ? 'border-rose-500/50 bg-rose-950/15 shadow-sm'
+                    ? 'border-rose-200 dark:border-rose-500/40 bg-jexi-surface'
                     : isDueToday
-                    ? 'border-amber-500/50 bg-amber-950/10 shadow-sm'
-                    : 'border-zinc-800 hover:border-zinc-700'
+                    ? 'border-amber-200 dark:border-amber-500/30 bg-jexi-surface'
+                    : 'border-jexi-subtle hover:border-jexi-hover'
                 }`}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-zinc-100 text-base">
-                        {intent.amount.toLocaleString()} {intent.tokenSymbol}
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap text-sm">
+                      <span className="font-bold text-jexi-primary font-mono tabular-nums text-base">
+                        {intent.amount.toLocaleString()} {formatTokenSymbol(intent.tokenSymbol)}
                       </span>
-                      <span className="text-xs text-zinc-400">to</span>
-                      <span className="font-semibold text-emerald-400 text-sm truncate">
+                      <span className="text-jexi-muted">to</span>
+                      <span className="font-semibold text-jexi-primary truncate">
                         {recipient?.name || 'Unknown Recipient'}
                       </span>
 
-                      {/* Status Badges */}
+                      {/* Unboxed clean metadata status */}
                       {isOverdue && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1">
-                          <AlertTriangle className="w-3 h-3" />
-                          OVERDUE by {daysOverdue} day{daysOverdue === 1 ? '' : 's'}
+                        <span className="text-xs text-rose-600 dark:text-rose-400 font-medium flex items-center gap-1">
+                          · {daysOverdue} day{daysOverdue === 1 ? '' : 's'} overdue
                         </span>
                       )}
 
                       {isDueToday && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3" />
-                          DUE TODAY
+                        <span className="text-xs text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+                          · Due today
                         </span>
                       )}
 
-                      {!isOverdue && !isDueToday && intent.active && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 text-zinc-300 border border-zinc-700/60">
-                          SCHEDULED
+                      {isCompleted ? (
+                        <span className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>· Completed</span>
                         </span>
-                      )}
-
-                      {!intent.active && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-500 border border-zinc-700/40">
-                          PAUSED
+                      ) : isRejected ? (
+                        <span className="text-xs text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-1">
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>· Rejected</span>
                         </span>
-                      )}
+                      ) : !isOverdue && !isDueToday && intent.active ? (
+                        <span className="text-xs text-jexi-muted font-medium">
+                          · Scheduled
+                        </span>
+                      ) : !intent.active ? (
+                        <span className="text-xs text-jexi-muted font-medium">
+                          · Paused
+                        </span>
+                      ) : null}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-zinc-400">
-                      <span className="flex items-center gap-1 font-mono text-[11px] text-zinc-300">
-                        <Calendar className="w-3.5 h-3.5 text-zinc-500" />
-                        Next Due:{' '}
-                        <strong className={isOverdue ? 'text-rose-300 font-bold' : isDueToday ? 'text-amber-300 font-bold' : 'text-zinc-200'}>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-jexi-muted">
+                      <span className="flex items-center gap-1.5 font-mono text-jexi-secondary">
+                        <Calendar className="w-3.5 h-3.5 text-jexi-muted" />
+                        <span>Due:</span>
+                        <strong className={isOverdue ? 'text-rose-600 dark:text-rose-300 font-medium' : isDueToday ? 'text-amber-600 dark:text-amber-300 font-medium' : 'text-jexi-primary font-medium'}>
                           {intent.nextDueDate}
                         </strong>
-                        {intent.scheduleTime && <span className="text-zinc-400">@{intent.scheduleTime}</span>}
-                      </span>
-                      <span className="text-zinc-300">
-                        Frequency: <strong className="font-medium text-emerald-400">{formatScheduleCadence(intent)}</strong>
+                        {intent.scheduleTime && <span className="text-jexi-muted font-sans">@{intent.scheduleTime}</span>}
                       </span>
                       <span>
-                        Network: <strong className="font-medium text-zinc-200">Base Sepolia</strong>
+                        Cadence: <span className="text-jexi-secondary">{formatScheduleCadence(intent)}</span>
+                      </span>
+                      <span>
+                        Network: <span className="text-jexi-secondary">{SUPPORTED_NETWORKS[intent.networkId]?.name || 'Base'}</span>
                       </span>
                     </div>
 
-                    {intent.notes && <p className="text-[11px] text-zinc-500 mt-1 italic">"{intent.notes}"</p>}
+                    {intent.notes && <p className="text-xs text-jexi-muted italic pt-0.5">"{intent.notes}"</p>}
                   </div>
 
-                  {/* Delete & Toggle */}
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => onToggleIntentionActive(intent.id)}
-                      title={intent.active ? 'Pause intention' : 'Resume intention'}
-                      className={`p-1.5 rounded-lg text-xs transition-colors ${
-                        intent.active ? 'text-emerald-400 hover:bg-emerald-500/10' : 'text-zinc-500 hover:bg-zinc-800'
-                      }`}
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                    </button>
+                  {/* Toggle and Delete Controls */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {!isCompleted && !isRejected && (
+                      <button
+                        onClick={() => onToggleIntentionActive(intent.id)}
+                        title={intent.active ? 'Pause intention' : 'Resume intention'}
+                        className={`p-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                          intent.active ? 'text-emerald-600 dark:text-emerald-400 hover:bg-jexi-hover' : 'text-jexi-muted hover:bg-jexi-hover'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       onClick={() => setIntentionToDelete(intent)}
-                      className="p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition-colors"
+                      className="p-1.5 text-jexi-muted hover:text-rose-600 dark:hover:text-rose-400 hover:bg-jexi-hover rounded-lg transition-colors cursor-pointer"
                       title="Delete intention"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -451,47 +465,53 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                 </div>
 
                 {/* Bottom Action Row */}
-                <div className="mt-3.5 pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
+                <div className="mt-4 pt-3.5 border-t border-jexi-divider flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-3">
                     <button
                       onClick={() => onViewDetail(intent)}
-                      className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+                      className="text-xs text-jexi-secondary hover:text-jexi-primary transition-colors cursor-pointer font-medium"
                     >
-                      View Details & Rules
+                      View Details & Preflight
                     </button>
 
-                    {/* Skip Occurrence Button for Overdue or Recurring items */}
-                    {isOverdue && onSkipOccurrence && (
+                    {isOverdue && onSkipOccurrence && !isCompleted && !isRejected && (
                       <button
                         onClick={() => setIntentionToSkip(intent)}
-                        className="text-xs text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-1 bg-amber-500/10 px-2 py-1 rounded-md border border-amber-500/20"
+                        className="text-xs text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 transition-colors flex items-center gap-1 bg-amber-50 dark:bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-500/30 cursor-pointer font-medium"
                       >
-                        <SkipForward className="w-3 h-3" />
-                        <span>Skip This Occurrence</span>
+                        <SkipForward className="w-3 h-3 text-amber-500" />
+                        <span>Skip Occurrence</span>
                       </button>
                     )}
                   </div>
 
-                  <button
-                    onClick={() => onPrepareTransaction(intent)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs ${
-                      isOverdue
-                        ? 'bg-rose-500 hover:bg-rose-400 text-white animate-pulse'
-                        : isDueToday
-                        ? 'bg-amber-400 hover:bg-amber-300 text-zinc-950'
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
-                    }`}
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>
-                      {isOverdue
-                        ? 'Review & Prepare (Overdue)'
-                        : isDueToday
-                        ? 'Review & Prepare (Due)'
-                        : 'Review & Prepare'}
-                    </span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                  {isCompleted ? (
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-500/30">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Completed</span>
+                    </div>
+                  ) : isRejected ? (
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-500/30">
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>Rejected</span>
+                    </div>
+                  ) : (
+                    <button
+                      disabled={!intent.active}
+                      onClick={() => onPrepareTransaction(intent)}
+                      className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isOverdue
+                          ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                          : isDueToday
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950'
+                          : 'bg-jexi-elevated hover:bg-jexi-hover text-jexi-primary border border-jexi-subtle'
+                      }`}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Prepare Payment</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -499,13 +519,14 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
         </div>
       )}
 
+
       {/* Add Intention Modal */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-zinc-100 flex items-center gap-2">
-                <Repeat className="w-4 h-4 text-emerald-400" />
+        <div className="fixed inset-0 z-50 bg-jexi-overlay backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-jexi-modal border border-jexi-subtle rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto text-jexi-primary">
+            <div className="flex items-center justify-between pb-3 border-b border-jexi-subtle">
+              <h3 className="text-base font-bold text-jexi-primary flex items-center gap-2">
+                <Repeat className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 Schedule Payment Intention
               </h3>
               <button
@@ -513,14 +534,14 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                   setIsAddModalOpen(false);
                   if (onClearPreselectedRecipient) onClearPreselectedRecipient();
                 }}
-                className="text-zinc-400 hover:text-zinc-200 p-1 text-sm font-semibold"
+                className="text-jexi-muted hover:text-jexi-primary p-1 text-sm font-semibold cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
             {formError && (
-              <div className="p-2.5 bg-rose-950/40 border border-rose-800/60 rounded-lg text-xs text-rose-300">
+              <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 rounded-lg text-xs text-rose-700 dark:text-rose-300">
                 {formError}
               </div>
             )}
@@ -529,14 +550,14 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
               {/* Recipient Dropdown with inline + Add New Recipient Trigger */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold text-zinc-300">
-                    Recipient <span className="text-rose-400">*</span>
+                  <label className="block text-xs font-semibold text-jexi-secondary">
+                    Recipient <span className="text-rose-500">*</span>
                   </label>
                   {onAddRecipient && (
                     <button
                       type="button"
                       onClick={() => setIsQuickAddOpen(true)}
-                      className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"
+                      className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-500 dark:text-emerald-400 dark:hover:text-emerald-300 flex items-center gap-1 transition-colors cursor-pointer"
                     >
                       <Plus className="w-3 h-3" />
                       <span>+ Add New Recipient</span>
@@ -546,7 +567,7 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                 <select
                   value={formRecipientId}
                   onChange={(e) => handleRecipientChange(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                 >
                   {recipients.map((r) => (
                     <option key={r.id} value={r.id}>
@@ -558,8 +579,8 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                    Amount <span className="text-rose-400">*</span>
+                  <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                    Amount <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="number"
@@ -569,28 +590,30 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                     placeholder="e.g. 50"
                     value={formAmount}
                     onChange={(e) => setFormAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/70"
+                    className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary placeholder:text-jexi-muted focus:outline-none focus:border-emerald-500 transition-colors"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Token & Network</label>
-                  <div className="px-3 py-2 bg-zinc-950/60 border border-zinc-800 rounded-lg text-xs text-zinc-400 flex items-center justify-between">
-                    <span className="text-emerald-400 font-semibold">
-                      {recipients.find((r) => r.id === formRecipientId)?.tokenSymbol || 'Test USDC'}
+                  <label className="block text-xs font-semibold text-jexi-secondary mb-1">Token & Network</label>
+                  <div className="px-3 py-2 bg-jexi-elevated border border-jexi-subtle rounded-lg text-xs text-jexi-muted flex items-center justify-between">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                      {formatTokenSymbol(recipients.find((r) => r.id === formRecipientId)?.tokenSymbol || 'USDC')}
                     </span>
-                    <span className="text-[10px] text-zinc-500">Base Sepolia</span>
+                    <span className="text-[10px] text-jexi-muted">
+                      {SUPPORTED_NETWORKS[recipients.find((r) => r.id === formRecipientId)?.networkId || 'base-mainnet']?.name || 'Base'}
+                    </span>
                   </div>
                 </div>
               </div>
 
               {/* Frequency Selector */}
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">Schedule Frequency</label>
+                <label className="block text-xs font-semibold text-jexi-secondary mb-1">Schedule Frequency</label>
                 <select
                   value={formFrequency}
                   onChange={(e) => setFormFrequency(e.target.value as ScheduleFrequency)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                 >
                   <option value="monthly">Monthly (specific day of month)</option>
                   <option value="weekly">Weekly (specific weekday)</option>
@@ -602,10 +625,10 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
 
               {/* Dynamic Scheduling Inputs according to selected frequency */}
               {formFrequency === 'monthly' && (
-                <div className="grid grid-cols-2 gap-3 p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+                <div className="grid grid-cols-2 gap-3 p-3 bg-jexi-elevated border border-jexi-subtle rounded-xl">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                      Day of Month (1–31) <span className="text-rose-400">*</span>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                      Day of Month (1–31) <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="number"
@@ -614,31 +637,31 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                       required
                       value={formDayOfMonth}
                       onChange={(e) => setFormDayOfMonth(parseInt(e.target.value) || 1)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Schedule Time</label>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">Schedule Time</label>
                     <input
                       type="time"
                       value={formScheduleTime}
                       onChange={(e) => setFormScheduleTime(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               {formFrequency === 'weekly' && (
-                <div className="grid grid-cols-2 gap-3 p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+                <div className="grid grid-cols-2 gap-3 p-3 bg-jexi-elevated border border-jexi-subtle rounded-xl">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                      Weekday <span className="text-rose-400">*</span>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                      Weekday <span className="text-rose-500">*</span>
                     </label>
                     <select
                       value={formDayOfWeek}
                       onChange={(e) => setFormDayOfWeek(parseInt(e.target.value))}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     >
                       {WEEKDAYS.map((day) => (
                         <option key={day.index} value={day.index}>
@@ -648,28 +671,28 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Schedule Time</label>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">Schedule Time</label>
                     <input
                       type="time"
                       value={formScheduleTime}
                       onChange={(e) => setFormScheduleTime(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               {formFrequency === 'biweekly' && (
-                <div className="space-y-2.5 p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+                <div className="space-y-2.5 p-3 bg-jexi-elevated border border-jexi-subtle rounded-xl">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                        Weekday <span className="text-rose-400">*</span>
+                      <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                        Weekday <span className="text-rose-500">*</span>
                       </label>
                       <select
                         value={formDayOfWeek}
                         onChange={(e) => setFormDayOfWeek(parseInt(e.target.value))}
-                        className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                        className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                       >
                         {WEEKDAYS.map((day) => (
                           <option key={day.index} value={day.index}>
@@ -679,36 +702,36 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-300 mb-1">Schedule Time</label>
+                      <label className="block text-xs font-semibold text-jexi-secondary mb-1">Schedule Time</label>
                       <input
                         type="time"
                         value={formScheduleTime}
                         onChange={(e) => setFormScheduleTime(e.target.value)}
-                        className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                        className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                      Starting Anchor Date <span className="text-rose-400">*</span>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                      Starting Anchor Date <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="date"
                       required
                       value={formStartDate}
                       onChange={(e) => setFormStartDate(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               {formFrequency === 'custom_days' && (
-                <div className="space-y-2.5 p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+                <div className="space-y-2.5 p-3 bg-jexi-elevated border border-jexi-subtle rounded-xl">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                        Interval (Every X Days) <span className="text-rose-400">*</span>
+                      <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                        Interval (Every X Days) <span className="text-rose-500">*</span>
                       </label>
                       <input
                         type="number"
@@ -718,39 +741,39 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                         placeholder="e.g. 30"
                         value={formIntervalDays}
                         onChange={(e) => setFormIntervalDays(parseInt(e.target.value) || 1)}
-                        className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                        className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-300 mb-1">Schedule Time</label>
+                      <label className="block text-xs font-semibold text-jexi-secondary mb-1">Schedule Time</label>
                       <input
                         type="time"
                         value={formScheduleTime}
                         onChange={(e) => setFormScheduleTime(e.target.value)}
-                        className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                        className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                      Starting Anchor Date <span className="text-rose-400">*</span>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                      Starting Anchor Date <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="date"
                       required
                       value={formStartDate}
                       onChange={(e) => setFormStartDate(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               {formFrequency === 'once' && (
-                <div className="grid grid-cols-2 gap-3 p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+                <div className="grid grid-cols-2 gap-3 p-3 bg-jexi-elevated border border-jexi-subtle rounded-xl">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                      Exact Due Date <span className="text-rose-400">*</span>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                      Exact Due Date <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="date"
@@ -760,59 +783,59 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                         setFormDueDate(e.target.value);
                         setFormStartDate(e.target.value);
                       }}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Exact Time</label>
+                    <label className="block text-xs font-semibold text-jexi-secondary mb-1">Exact Time</label>
                     <input
                       type="time"
                       value={formScheduleTime}
                       onChange={(e) => setFormScheduleTime(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                      className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>
               )}
 
               {/* Human-Readable Summary Badge */}
-              <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-1 text-xs">
-                <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-500/30 rounded-xl space-y-1 text-xs">
+                <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-semibold">
                   <Clock className="w-3.5 h-3.5" />
                   <span>Calculated Schedule Summary:</span>
                 </div>
-                <p className="text-zinc-200 font-medium">{schedulePreview}</p>
-                <p className="text-[11px] text-zinc-400 flex items-center gap-1 mt-0.5">
-                  <Calendar className="w-3 h-3 text-zinc-500" />
-                  Next scheduled due date: <strong className="text-emerald-400">{formDueDate}</strong>
+                <p className="text-jexi-primary font-medium">{schedulePreview}</p>
+                <p className="text-[11px] text-jexi-muted flex items-center gap-1 mt-0.5">
+                  <Calendar className="w-3 h-3 text-jexi-muted" />
+                  Next scheduled due date: <strong className="text-emerald-600 dark:text-emerald-400">{formDueDate}</strong>
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">Notes / Intent Purpose (Optional)</label>
+                <label className="block text-xs font-semibold text-jexi-secondary mb-1">Notes / Intent Purpose (Optional)</label>
                 <input
                   type="text"
                   placeholder="e.g. Monthly rent, team stipend"
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary placeholder:text-jexi-muted focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-jexi-divider">
                 <button
                   type="button"
                   onClick={() => {
                     setIsAddModalOpen(false);
                     if (onClearPreselectedRecipient) onClearPreselectedRecipient();
                   }}
-                  className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                  className="px-4 py-2 rounded-lg bg-jexi-elevated hover:bg-jexi-hover text-jexi-secondary border border-jexi-subtle text-xs font-medium transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold transition-all shadow-md"
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 text-xs font-bold transition-all shadow-xs cursor-pointer"
                 >
                   Save Intention
                 </button>
@@ -824,32 +847,32 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
 
       {/* Quick Add Recipient Modal (Triggered directly from inside Intention form) */}
       {isQuickAddOpen && (
-        <div className="fixed inset-0 z-60 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-zinc-100 flex items-center gap-2">
-                <Shield className="w-4 h-4 text-emerald-400" />
+        <div className="fixed inset-0 z-60 bg-jexi-overlay backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-jexi-modal border border-jexi-subtle rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 text-jexi-primary">
+            <div className="flex items-center justify-between pb-3 border-b border-jexi-subtle">
+              <h3 className="text-base font-bold text-jexi-primary flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 Quick Add Recipient
               </h3>
               <button
                 type="button"
                 onClick={() => setIsQuickAddOpen(false)}
-                className="text-zinc-400 hover:text-zinc-200 p-1 text-sm font-semibold"
+                className="text-jexi-muted hover:text-jexi-primary p-1 text-sm font-semibold cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
             {quickError && (
-              <div className="p-2.5 bg-rose-950/40 border border-rose-800/60 rounded-lg text-xs text-rose-300">
+              <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 rounded-lg text-xs text-rose-700 dark:text-rose-300">
                 {quickError}
               </div>
             )}
 
             <form onSubmit={handleQuickAddRecipient} className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                  Recipient Name <span className="text-rose-400">*</span>
+                <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                  Recipient Name <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
@@ -857,13 +880,13 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                   placeholder="e.g. Alex Freelancer"
                   value={quickName}
                   onChange={(e) => setQuickName(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary placeholder:text-jexi-muted focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                  Wallet Address (0x...) <span className="text-rose-400">*</span>
+                <label className="block text-xs font-semibold text-jexi-secondary mb-1">
+                  Wallet Address (0x...) <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
@@ -871,31 +894,31 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                   placeholder="0x..."
                   value={quickAddress}
                   onChange={(e) => setQuickAddress(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs font-mono text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs font-mono text-jexi-primary placeholder:text-jexi-muted focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Network</label>
+                  <label className="block text-xs font-semibold text-jexi-secondary mb-1">Network</label>
                   <select
                     value={quickNetwork}
                     onChange={(e) => setQuickNetwork(e.target.value as NetworkId)}
-                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                    className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                   >
-                    <option value="base-sepolia">Base Sepolia</option>
+                    <option value="base-mainnet">Base</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Token</label>
+                  <label className="block text-xs font-semibold text-jexi-secondary mb-1">Token</label>
                   <select
                     value={quickToken}
                     onChange={(e) => setQuickToken(e.target.value)}
-                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 focus:outline-none focus:border-emerald-500/70"
+                    className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary focus:outline-none focus:border-emerald-500 transition-colors"
                   >
                     {SUPPORTED_TOKENS.map((t) => (
                       <option key={t.symbol} value={t.symbol}>
-                        {t.symbol}
+                        {formatTokenSymbol(t.symbol)}
                       </option>
                     ))}
                   </select>
@@ -903,7 +926,7 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1">Default Amount (Optional)</label>
+                <label className="block text-xs font-semibold text-jexi-secondary mb-1">Default Amount (Optional)</label>
                 <input
                   type="number"
                   step="any"
@@ -911,21 +934,21 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                   placeholder="e.g. 100"
                   value={quickDefaultAmount}
                   onChange={(e) => setQuickDefaultAmount(e.target.value)}
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/70"
+                  className="w-full px-3 py-2 bg-jexi-surface border border-jexi-subtle rounded-lg text-xs text-jexi-primary placeholder:text-jexi-muted focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-jexi-divider">
                 <button
                   type="button"
                   onClick={() => setIsQuickAddOpen(false)}
-                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                  className="px-3.5 py-1.5 rounded-lg bg-jexi-elevated hover:bg-jexi-hover text-jexi-secondary border border-jexi-subtle text-xs font-medium transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold transition-all shadow-md"
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:text-zinc-950 text-xs font-bold transition-all shadow-xs cursor-pointer"
                 >
                   Add & Select
                 </button>
@@ -936,115 +959,60 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
       )}
 
       {/* Skip Occurrence Confirmation Modal */}
-      {intentionToSkip && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-2.5 text-amber-400">
-              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                <SkipForward className="w-5 h-5 text-amber-400" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-zinc-100">Skip This Occurrence?</h3>
-                <p className="text-xs text-zinc-400">Advance schedule without creating a transaction</p>
-              </div>
-            </div>
-
-            <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3.5 space-y-2 text-xs">
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Recipient:</span>
-                <span className="font-bold text-zinc-100">
-                  {recipients.find((r) => r.id === intentionToSkip.recipientId)?.name || 'Unknown'}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Current Overdue Date:</span>
-                <span className="font-mono text-rose-400 font-bold">{intentionToSkip.nextDueDate}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-500">New Next Due Date:</span>
-                <span className="font-mono text-emerald-400 font-bold">{advanceNextDueDate(intentionToSkip)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Recurrence Cadence:</span>
-                <span className="text-zinc-300">{formatScheduleCadence(intentionToSkip)}</span>
-              </div>
-            </div>
-
-            <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-400 space-y-1">
-              <p className="text-zinc-300 font-medium">Deterministic Non-Execution Guarantee</p>
-              <p className="text-[11px]">
-                No wallet signing will take place, no transaction will be recorded in History, and no funds will be moved.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setIntentionToSkip(null)}
-                className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
-              >
-                Keep Overdue
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onSkipOccurrence) {
-                    onSkipOccurrence(intentionToSkip.id);
-                  }
-                  setIntentionToSkip(null);
-                }}
-                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold transition-all shadow-md flex items-center gap-1.5"
-              >
-                <SkipForward className="w-3.5 h-3.5" />
-                <span>Confirm Skip</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SkipConfirmationModal
+        intention={intentionToSkip}
+        recipients={recipients}
+        onConfirm={() => {
+          if (intentionToSkip && onSkipOccurrence) {
+            onSkipOccurrence(intentionToSkip.id);
+          }
+          setIntentionToSkip(null);
+        }}
+        onCancel={() => setIntentionToSkip(null)}
+      />
 
       {/* Delete Intention Confirmation Modal */}
       {intentionToDelete && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-2.5 text-rose-400">
-              <div className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20">
-                <Trash2 className="w-5 h-5 text-rose-400" />
+        <div className="fixed inset-0 z-50 bg-jexi-overlay backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-jexi-modal border border-jexi-subtle rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 text-jexi-primary">
+            <div className="flex items-center gap-2.5 text-rose-600 dark:text-rose-400 pb-3 border-b border-jexi-subtle">
+              <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20">
+                <Trash2 className="w-5 h-5 text-rose-600 dark:text-rose-400" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-zinc-100">Cancel Payment Intention</h3>
-                <p className="text-xs text-zinc-400">Remove this scheduled payment plan</p>
+                <h3 className="text-base font-bold text-jexi-primary">Cancel Payment Intention</h3>
+                <p className="text-xs text-jexi-muted">Remove this scheduled payment plan</p>
               </div>
             </div>
 
-            <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3.5 space-y-2 text-xs">
+            <div className="bg-signa-elevated border border-signa-subtle rounded-xl p-3.5 space-y-2 text-xs">
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Recipient:</span>
-                <span className="font-bold text-zinc-100">
+                <span className="text-signa-muted">Recipient:</span>
+                <span className="font-bold text-signa-primary">
                   {recipients.find((r) => r.id === intentionToDelete.recipientId)?.name || 'Unknown Recipient'}
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Amount:</span>
-                <span className="font-mono font-bold text-emerald-400 text-sm">
+                <span className="text-signa-muted">Amount:</span>
+                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
                   {intentionToDelete.amount.toLocaleString()} {intentionToDelete.tokenSymbol}
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Schedule:</span>
-                <span className="text-zinc-300 font-medium">{formatScheduleCadence(intentionToDelete)}</span>
+                <span className="text-signa-muted">Schedule:</span>
+                <span className="text-signa-secondary font-medium">{formatScheduleCadence(intentionToDelete)}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Next Due:</span>
-                <span className="text-zinc-300 font-mono">{intentionToDelete.nextDueDate}</span>
+                <span className="text-signa-muted">Next Due:</span>
+                <span className="text-signa-secondary font-mono">{intentionToDelete.nextDueDate}</span>
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-1">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-signa-divider">
               <button
                 type="button"
                 onClick={() => setIntentionToDelete(null)}
-                className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                className="px-4 py-2 rounded-lg bg-signa-elevated hover:bg-signa-hover text-signa-secondary border border-signa-subtle text-xs font-medium transition-colors cursor-pointer"
               >
                 Keep Intention
               </button>
@@ -1054,7 +1022,7 @@ export const IntentionsView: React.FC<IntentionsViewProps> = ({
                   onDeleteIntention(intentionToDelete.id);
                   setIntentionToDelete(null);
                 }}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5"
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Delete Intention</span>
