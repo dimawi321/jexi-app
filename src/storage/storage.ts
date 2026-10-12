@@ -205,7 +205,17 @@ export function loadCompletedTransactions(): CompletedTransactionRecord[] {
   }
   try {
     const key = getUserKey(KEYS.COMPLETED_TXS);
-    const raw = localStorage.getItem(key);
+    let raw = localStorage.getItem(key);
+    if (!raw) {
+      raw = localStorage.getItem(KEYS.COMPLETED_TXS) || localStorage.getItem(LEGACY_KEYS.COMPLETED_TXS);
+      if (raw) {
+        try {
+          localStorage.setItem(key, raw);
+        } catch {
+          // ignore
+        }
+      }
+    }
     if (!raw) {
       saveCompletedTransactions([]);
       return [];
@@ -614,7 +624,7 @@ export function exportJexiAccountPayload(): SignaAccountDataPayload {
 export function importSignaAccountPayload(payload: SignaAccountDataPayload): { success: boolean; message: string } {
   try {
     if (!payload || !Array.isArray(payload.recipients) || !Array.isArray(payload.intentions)) {
-      return { success: false, message: 'Invalid SIGNA sync payload structure.' };
+      return { success: false, message: 'Invalid JEXI sync payload structure.' };
     }
 
     applyPayloadToActiveStorage(payload);

@@ -1456,7 +1456,16 @@ export default function App() {
       )}
 
       {/* Mobile-first Bottom Navigation */}
-      <BottomNav activeTab={activeTab} onSelectTab={setActiveTab} dueCount={dueCount} />
+      <BottomNav
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          if (tab === 'history') {
+            setHistoryRecipientFilter(null);
+          }
+          setActiveTab(tab);
+        }}
+        dueCount={dueCount}
+      />
     </div>
   );
 }

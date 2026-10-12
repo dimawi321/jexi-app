@@ -157,7 +157,7 @@ export function mapFirebaseUser(fbUser: FirebaseUser): UserAccount {
   return {
     id: fbUser.uid,
     email: fbUser.email || '',
-    displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'SIGNA User',
+    displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'JEXI User',
     provider: isGoogle ? 'google' : 'email',
     // Google accounts have guaranteed verified emails
     emailVerified: isGoogle ? true : Boolean(fbUser.emailVerified),

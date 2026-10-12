@@ -478,7 +478,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                       <div className="text-[11px] text-jexi-muted">
                         {hasUserSecurityPin(currentUser.id) ? (
                           <span className="text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Client-side encryption protection active
+                            <Check className="w-3 h-3" /> PIN authorization protection active
                           </span>
                         ) : (
                           <span className="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">

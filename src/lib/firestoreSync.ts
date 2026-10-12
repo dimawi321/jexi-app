@@ -437,21 +437,18 @@ export async function loadAndApplyCloudData(
         throw new Error('Cloud data account ID mismatch with authenticated UID');
       }
 
-      // Merge only if localPayload also belongs to this user. Otherwise strictly use cloudPayload.
-      const isLocalUserOwned = localPayload.accountId === user.id;
-      const merged = isLocalUserOwned
-        ? mergeLocalAndCloudPayload(localPayload, cloudPayload)
-        : cloudPayload;
+      // Always merge local and cloud payloads to prevent dropping locally saved transactions
+      const merged = mergeLocalAndCloudPayload(localPayload, cloudPayload);
 
       // Apply to active local storage
       applyPayloadToActiveStorage(merged);
       saveCurrentStateToAccount(user.id, user.email);
 
-      // If local had newer items (like history), update cloud
+      // If local had newer items or local history exists, update cloud
       if (
-        isLocalUserOwned &&
-        ((localPayload.history && localPayload.history.length > cloudPayload.history.length) ||
-          (localPayload.recipients && localPayload.recipients.length > cloudPayload.recipients.length))
+        (localPayload.history && localPayload.history.length > 0) ||
+        (localPayload.history && cloudPayload.history && localPayload.history.length > cloudPayload.history.length) ||
+        (localPayload.recipients && localPayload.recipients.length > cloudPayload.recipients.length)
       ) {
         await saveUserCloudData(user.id, merged);
       }

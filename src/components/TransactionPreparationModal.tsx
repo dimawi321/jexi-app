@@ -100,7 +100,8 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       existingRec &&
       (existingRec.state === 'CONFIRMED' ||
         existingRec.state === 'SUBMITTED' ||
-        existingRec.state === 'AUTHORIZED')
+        existingRec.state === 'AUTHORIZED' ||
+        existingRec.state === 'SIGNING')
     ) {
       setIntegrityError(
         `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [${existingRec.state}] and cannot be executed again.`
@@ -244,7 +245,8 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
         existingRec &&
         (existingRec.state === 'CONFIRMED' ||
           existingRec.state === 'SUBMITTED' ||
-          existingRec.state === 'AUTHORIZED')
+          existingRec.state === 'AUTHORIZED' ||
+          existingRec.state === 'SIGNING')
       ) {
         setIntegrityError(
           `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [${existingRec.state}] and cannot be submitted again.`
@@ -427,17 +429,21 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       setSimulationStage('ready_for_authorization');
       setIntegrityError(result.error || 'Transaction authorization was cancelled or failed in wallet.');
       
-      const isTimeout = result.error && /wallet response was not received|timed out|timeout/i.test(result.error);
-      if (isTimeout) {
-        // Outcome unknown on timeout: do not delete occurrence record or mark failed automatically.
+      const isExplicitRejection = result.isUserRejected || /rejected|cancelled|denied/i.test(result.error || '');
+      if (isExplicitRejection) {
+        // Explicit user rejection: record REJECTED and unlock/delete occurrence
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'REJECTED', {
+          error: result.error,
+        });
+        deleteOccurrenceRecord(occurrenceId);
+        isSubmittingRef.current = false;
+      } else {
+        // Ambiguous result / timeout / network drop / unknown state: NEVER delete occurrence record.
+        // Preserve durable UNKNOWN/SIGNING lock and block automatic resubmission.
         setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'SIGNING', {
           error: result.error,
         });
-        // Requirement 4: Do not unlock the same payment for another signing attempt while the original request may still be pending
         isSubmittingRef.current = true;
-      } else {
-        deleteOccurrenceRecord(occurrenceId);
-        isSubmittingRef.current = false;
       }
       return;
     }
