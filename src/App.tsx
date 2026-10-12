@@ -162,11 +162,7 @@ export default function App() {
 
             for (const h of loadedHistory) {
               if (h.status === 'BROADCAST_SUBMITTED' && h.txHash && h.txHash.startsWith('0x')) {
-                checkTransactionReceipt(h.txHash).then((receiptCheck) => {
-                  if (receiptCheck.status === 'CONFIRMED_ON_CHAIN' || receiptCheck.status === 'FAILED_ON_CHAIN') {
-                    handleRecheckReceipt(h);
-                  }
-                }).catch(() => {});
+                handleRecheckReceipt(h);
               }
             }
           }
@@ -695,16 +691,17 @@ export default function App() {
     updatedNextDueDate: string
   ) => {
     if (!currentUser || (currentUser.provider === 'email' && !currentUser.emailVerified)) return;
-    // 1. Save or Update in History
-    const existingIndex = history.findIndex(
+    // 1. Save or Update in History using active storage as source of truth
+    const storedHistory = loadCompletedTransactions();
+    const existingIndex = storedHistory.findIndex(
       (h) => (completedRecord.txHash && h.txHash === completedRecord.txHash) || h.id === completedRecord.id
     );
     let updatedHistory: CompletedTransactionRecord[];
     if (existingIndex >= 0) {
-      updatedHistory = [...history];
+      updatedHistory = [...storedHistory];
       updatedHistory[existingIndex] = completedRecord;
     } else {
-      updatedHistory = [completedRecord, ...history];
+      updatedHistory = [completedRecord, ...storedHistory];
     }
     setHistory(updatedHistory);
     saveCompletedTransactions(updatedHistory);
@@ -723,7 +720,8 @@ export default function App() {
     }
 
     const completionTimestamp = new Date().toISOString();
-    const updatedIntentions = intentions.map((intent) => {
+    const currentIntentions = loadIntentions();
+    const updatedIntentions = currentIntentions.map((intent) => {
       if (intent.id === completedRecord.intentionId) {
         if (intent.frequency === 'once') {
           return {
@@ -757,14 +755,15 @@ export default function App() {
       const receiptCheck = await checkTransactionReceipt(txRecord.txHash);
 
       if (receiptCheck.status === 'CONFIRMED_ON_CHAIN') {
-        const existingIndex = history.findIndex(
+        const storedHistory = loadCompletedTransactions();
+        const existingIndex = storedHistory.findIndex(
           (h) => (h.txHash && h.txHash.toLowerCase() === txRecord.txHash.toLowerCase()) || h.id === txRecord.id
         );
 
         // Idempotency check: if this transaction is already marked confirmed, do not re-advance or duplicate
-        if (existingIndex >= 0 && history[existingIndex].status === 'CONFIRMED_ON_CHAIN') {
+        if (existingIndex >= 0 && storedHistory[existingIndex].status === 'CONFIRMED_ON_CHAIN') {
           setIntegrityNotice({
-            message: `Transaction ${txRecord.txHash.slice(0, 10)}... is confirmed on Base Mainnet (Block #${receiptCheck.blockNumber || history[existingIndex].blockNumber}).`,
+            message: `Transaction ${txRecord.txHash.slice(0, 10)}... is confirmed on Base Mainnet (Block #${receiptCheck.blockNumber || storedHistory[existingIndex].blockNumber}).`,
             type: 'info',
           });
           return;
@@ -779,17 +778,18 @@ export default function App() {
 
         let updatedHistory: CompletedTransactionRecord[];
         if (existingIndex >= 0) {
-          updatedHistory = [...history];
+          updatedHistory = [...storedHistory];
           updatedHistory[existingIndex] = confirmedRecord;
         } else {
-          updatedHistory = [confirmedRecord, ...history];
+          updatedHistory = [confirmedRecord, ...storedHistory];
         }
         setHistory(updatedHistory);
         saveCompletedTransactions(updatedHistory);
 
         // Reconcile occurrence record
+        const currentStoredIntentions = loadIntentions();
         if (txRecord.occurrenceId) {
-          const target = intentions.find((i) => i.id === txRecord.intentionId);
+          const target = currentStoredIntentions.find((i) => i.id === txRecord.intentionId);
           setOccurrenceState(
             txRecord.occurrenceId,
             txRecord.intentionId,
@@ -800,10 +800,10 @@ export default function App() {
         }
 
         // Reconcile intention recurrence or one-time completion (strictly idempotent)
-        const targetIntention = intentions.find((i) => i.id === txRecord.intentionId);
+        const targetIntention = currentStoredIntentions.find((i) => i.id === txRecord.intentionId);
         if (targetIntention) {
           const completionTimestamp = new Date().toISOString();
-          const updatedIntentions = intentions.map((intent) => {
+          const updatedIntentions = currentStoredIntentions.map((intent) => {
             if (intent.id === targetIntention.id) {
               if (intent.frequency === 'once') {
                 if (!intent.isCompleted) {
@@ -850,7 +850,8 @@ export default function App() {
           type: 'info',
         });
       } else if (receiptCheck.status === 'FAILED_ON_CHAIN') {
-        const existingIndex = history.findIndex(
+        const storedHistory = loadCompletedTransactions();
+        const existingIndex = storedHistory.findIndex(
           (h) => (h.txHash && h.txHash.toLowerCase() === txRecord.txHash.toLowerCase()) || h.id === txRecord.id
         );
 
@@ -863,16 +864,17 @@ export default function App() {
 
         let updatedHistory: CompletedTransactionRecord[];
         if (existingIndex >= 0) {
-          updatedHistory = [...history];
+          updatedHistory = [...storedHistory];
           updatedHistory[existingIndex] = failedRecord;
         } else {
-          updatedHistory = [failedRecord, ...history];
+          updatedHistory = [failedRecord, ...storedHistory];
         }
         setHistory(updatedHistory);
         saveCompletedTransactions(updatedHistory);
 
+        const currentStoredIntentions = loadIntentions();
         if (txRecord.occurrenceId) {
-          const target = intentions.find((i) => i.id === txRecord.intentionId);
+          const target = currentStoredIntentions.find((i) => i.id === txRecord.intentionId);
           setOccurrenceState(
             txRecord.occurrenceId,
             txRecord.intentionId,
@@ -1007,11 +1009,7 @@ export default function App() {
 
     for (const h of loadedHistory) {
       if (h.status === 'BROADCAST_SUBMITTED' && h.txHash && h.txHash.startsWith('0x')) {
-        checkTransactionReceipt(h.txHash).then((receiptCheck) => {
-          if (receiptCheck.status === 'CONFIRMED_ON_CHAIN' || receiptCheck.status === 'FAILED_ON_CHAIN') {
-            handleRecheckReceipt(h);
-          }
-        }).catch(() => {});
+        handleRecheckReceipt(h);
       }
     }
     if (walletState.isConnected && walletState.address) {

@@ -81,6 +81,16 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
   const [isCheckingReceipt, setIsCheckingReceipt] = useState<boolean>(false);
   const [signatureResult, setSignatureResult] = useState<SignatureResult | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear polling timers on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    };
+  }, []);
 
   const occurrenceId = preparedTx.occurrenceId || getOccurrenceId(intention.id, intention.nextDueDate);
 
@@ -485,46 +495,78 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
     // Store broadcast record in history immediately (does NOT advance recurrence because status is BROADCAST_SUBMITTED)
     onTransactionConfirmed(broadcastRecord, '');
 
-    // Query on-chain receipt using eth_getTransactionReceipt via active provider
+    // Clear any previous receipt polling intervals
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+
+    // Continuous receipt polling: 3-second interval up to 90 seconds (Base block time ~2 seconds)
     setIsCheckingReceipt(true);
-    try {
-      const receiptCheck = await checkTransactionReceipt(realTxHash);
-      setReceiptStatus(receiptCheck.status);
+    let isFinished = false;
 
-      if (receiptCheck.status === 'CONFIRMED_ON_CHAIN') {
-        setSimulationStage('simulated_confirmed');
-        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'CONFIRMED', {
-          txHash: realTxHash,
-          blockNumber: receiptCheck.blockNumber,
-        });
+    const queryReceipt = async () => {
+      if (isFinished) return;
+      try {
+        const receiptCheck = await checkTransactionReceipt(realTxHash);
+        if (isFinished) return;
+        setReceiptStatus(receiptCheck.status);
 
-        const nextDateStr = advanceNextDueDate(intention);
-        const confirmedRecord: CompletedTransactionRecord = {
-          ...broadcastRecord,
-          occurrenceState: 'CONFIRMED',
-          status: 'CONFIRMED_ON_CHAIN',
-          blockNumber: receiptCheck.blockNumber,
-        };
-        onTransactionConfirmed(confirmedRecord, nextDateStr);
-      } else if (receiptCheck.status === 'FAILED_ON_CHAIN') {
-        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', {
-          txHash: realTxHash,
-          blockNumber: receiptCheck.blockNumber,
-        });
+        if (receiptCheck.status === 'CONFIRMED_ON_CHAIN') {
+          isFinished = true;
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+          setIsCheckingReceipt(false);
+          setSimulationStage('simulated_confirmed');
 
-        const failedRecord: CompletedTransactionRecord = {
-          ...broadcastRecord,
-          occurrenceState: 'FAILED',
-          status: 'FAILED_ON_CHAIN',
-          blockNumber: receiptCheck.blockNumber,
-        };
-        onTransactionConfirmed(failedRecord, '');
+          setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'CONFIRMED', {
+            txHash: realTxHash,
+            blockNumber: receiptCheck.blockNumber,
+          });
+
+          const nextDateStr = advanceNextDueDate(intention);
+          const confirmedRecord: CompletedTransactionRecord = {
+            ...broadcastRecord,
+            occurrenceState: 'CONFIRMED',
+            status: 'CONFIRMED_ON_CHAIN',
+            blockNumber: receiptCheck.blockNumber,
+          };
+          onTransactionConfirmed(confirmedRecord, nextDateStr);
+        } else if (receiptCheck.status === 'FAILED_ON_CHAIN') {
+          isFinished = true;
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+          setIsCheckingReceipt(false);
+
+          setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', {
+            txHash: realTxHash,
+            blockNumber: receiptCheck.blockNumber,
+          });
+
+          const failedRecord: CompletedTransactionRecord = {
+            ...broadcastRecord,
+            occurrenceState: 'FAILED',
+            status: 'FAILED_ON_CHAIN',
+            blockNumber: receiptCheck.blockNumber,
+          };
+          onTransactionConfirmed(failedRecord, '');
+        }
+      } catch {
+        // Non-blocking: will retry next interval or background check
       }
-    } catch {
-      // Non-blocking: transaction remains in BROADCAST_SUBMITTED pending state
-    } finally {
-      setIsCheckingReceipt(false);
-    }
+    };
+
+    // Initial immediate receipt query
+    queryReceipt();
+
+    // Polling interval
+    pollIntervalRef.current = setInterval(queryReceipt, 3000);
+
+    // Stop active polling after 90 seconds (remains pending in history, user can manually recheck or refresh)
+    pollTimeoutRef.current = setTimeout(() => {
+      if (!isFinished) {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        setIsCheckingReceipt(false);
+      }
+    }, 90000);
   };
 
   const handleManualCheckReceipt = async () => {
@@ -538,6 +580,8 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
         id: `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         preparedTxId: preparedTx.id,
         intentionId: intention.id,
+        occurrenceId,
+        occurrenceState: check.status === 'CONFIRMED_ON_CHAIN' ? 'CONFIRMED' : check.status === 'FAILED_ON_CHAIN' ? 'FAILED' : 'SUBMITTED',
         recipientId: recipient.id,
         recipientName: recipient.name,
         recipientAddress: recipient.address,
@@ -554,10 +598,22 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       };
 
       if (check.status === 'CONFIRMED_ON_CHAIN') {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
         setSimulationStage('simulated_confirmed');
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'CONFIRMED', {
+          txHash: simulatedTxHash,
+          blockNumber: check.blockNumber,
+        });
         const nextDateStr = advanceNextDueDate(intention);
         onTransactionConfirmed(recordBase, nextDateStr);
       } else if (check.status === 'FAILED_ON_CHAIN') {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+        setOccurrenceState(occurrenceId, intention.id, intention.nextDueDate, 'FAILED', {
+          txHash: simulatedTxHash,
+          blockNumber: check.blockNumber,
+        });
         onTransactionConfirmed(recordBase, '');
       }
     } finally {
