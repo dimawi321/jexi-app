@@ -205,6 +205,22 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   </div>
                 )}
 
+                {/* Request Origin Attribution */}
+                <div className="flex items-center justify-between text-xs text-jexi-muted bg-jexi-elevated px-2.5 py-1.5 rounded-lg border border-jexi-subtle">
+                  <span className="text-[11px] text-jexi-muted shrink-0">Initiated By:</span>
+                  {tx.origin === 'JEXI_SELF_CUSTODY_ENGINE' ? (
+                    <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      JEXI (Self-Custody Engine)
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-medium text-jexi-secondary flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-jexi-muted" />
+                      Self-Custody Wallet
+                    </span>
+                  )}
+                </div>
+
                 {/* Transfer Action */}
                 <div className="flex items-center justify-between text-xs text-jexi-muted bg-jexi-elevated px-2.5 py-1.5 rounded-lg border border-jexi-subtle">
                   <span className="text-[11px] text-jexi-muted shrink-0">Action:</span>

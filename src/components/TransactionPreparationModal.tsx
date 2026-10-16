@@ -110,11 +110,14 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       existingRec &&
       (existingRec.state === 'CONFIRMED' ||
         existingRec.state === 'SUBMITTED' ||
-        existingRec.state === 'AUTHORIZED' ||
-        existingRec.state === 'SIGNING')
+        existingRec.state === 'AUTHORIZED')
     ) {
       setIntegrityError(
         `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [${existingRec.state}] and cannot be executed again.`
+      );
+    } else if (existingRec && existingRec.state === 'SIGNING') {
+      setIntegrityError(
+        `Duplicate Execution Protected — Occurrence ${occurrenceId} is currently in state [SIGNING] (wallet request timeout or unknown outcome). To prevent accidental double-spending, automatic resubmission is blocked. Please check your MetaMask Activity and BaseScan (https://basescan.org) to verify if the transaction was submitted. If you have a valid transaction hash (0x...), you can verify it in History.`
       );
     } else if (
       existingHistory &&
@@ -228,6 +231,7 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       isSimulation: true,
       isOnChain: false,
       status: 'CONFIRMED_ON_CHAIN',
+      origin: 'JEXI_SELF_CUSTODY_ENGINE',
     };
     onTransactionConfirmed(record, nextDateStr);
     onClose();
@@ -428,6 +432,7 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
           isSimulation: false,
           isOnChain: true,
           status: 'BROADCAST_SUBMITTED',
+          origin: 'JEXI_SELF_CUSTODY_ENGINE',
         };
 
         onTransactionConfirmed(broadcastRecord, '');
@@ -490,6 +495,7 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
       isSimulation: false,
       isOnChain: true,
       status: 'BROADCAST_SUBMITTED',
+      origin: 'JEXI_SELF_CUSTODY_ENGINE',
     };
 
     // Store broadcast record in history immediately (does NOT advance recurrence because status is BROADCAST_SUBMITTED)
@@ -595,6 +601,7 @@ export const TransactionPreparationModal: React.FC<TransactionPreparationModalPr
         isOnChain: true,
         status: check.status,
         blockNumber: check.blockNumber,
+        origin: 'JEXI_SELF_CUSTODY_ENGINE',
       };
 
       if (check.status === 'CONFIRMED_ON_CHAIN') {

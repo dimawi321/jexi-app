@@ -22,6 +22,7 @@ const KEYS = {
   ACCOUNTS_INDEX: 'signa_accounts_index_v1',
   ACCOUNT_DATA_PREFIX: 'signa_account_data_v1_',
   OCCURRENCE_STATES: 'signa_occurrence_states_v1',
+  WALLET_CONNECTED: 'signa_wallet_connected_v1',
 };
 
 const LEGACY_KEYS = {
@@ -34,6 +35,7 @@ const LEGACY_KEYS = {
   ACCOUNTS_INDEX: 'jexi_accounts_index_v1',
   ACCOUNT_DATA_PREFIX: 'jexi_account_data_v1_',
   OCCURRENCE_STATES: 'jexi_occurrence_states_v1',
+  WALLET_CONNECTED: 'jexi_wallet_connected_v1',
 };
 
 function getItemWithFallback(key: string, legacyKey: string): string | null {
@@ -643,3 +645,51 @@ export function importSignaAccountPayload(payload: SignaAccountDataPayload): { s
 export function importJexiAccountPayload(payload: SignaAccountDataPayload): { success: boolean; message: string } {
   return importSignaAccountPayload(payload);
 }
+
+/**
+ * Returns the explicitly connected wallet address for the specified JEXI account profile, or null.
+ * Enforces per-profile wallet isolation: a newly created profile or unselected profile
+ * defaults to disconnected (null), even if the browser extension has global permissions.
+ */
+export function getAccountConnectedWallet(uid?: string | null): string | null {
+  const targetUid = uid || getAuthenticatedUid();
+  if (!targetUid) return null;
+  try {
+    const key = `${KEYS.WALLET_CONNECTED}_${targetUid}`;
+    const legacyKey = `${LEGACY_KEYS.WALLET_CONNECTED}_${targetUid}`;
+    const val = getItemWithFallback(key, legacyKey);
+    if (!val) return null;
+    // Support either stored checksummed address or legacy 'true'
+    return val;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks if the specified JEXI account profile has explicitly authorized/connected a wallet.
+ */
+export function isAccountWalletConnected(uid?: string | null): boolean {
+  return getAccountConnectedWallet(uid) !== null;
+}
+
+/**
+ * Persists or clears the profile's explicit wallet connection preference.
+ * When isConnected is true, stores the connected address (if provided) or 'true'.
+ */
+export function setAccountWalletConnected(uid: string | null | undefined, isConnected: boolean, address?: string | null): void {
+  const targetUid = uid || getAuthenticatedUid();
+  if (!targetUid) return;
+  try {
+    const key = `${KEYS.WALLET_CONNECTED}_${targetUid}`;
+    if (isConnected) {
+      localStorage.setItem(key, address ? address.toLowerCase() : 'true');
+    } else {
+      localStorage.removeItem(key);
+      localStorage.removeItem(`${LEGACY_KEYS.WALLET_CONNECTED}_${targetUid}`);
+    }
+  } catch (e) {
+    console.error('Failed to update account wallet connection state:', e);
+  }
+}
+

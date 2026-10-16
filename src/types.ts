@@ -155,6 +155,7 @@ export interface CompletedTransactionRecord {
   simulatedRefId?: string;
   status?: 'BROADCAST_SUBMITTED' | 'CONFIRMED_ON_CHAIN' | 'FAILED_ON_CHAIN';
   blockNumber?: number;
+  origin?: 'JEXI_SELF_CUSTODY_ENGINE';
 }
 
 export interface UserAccount {

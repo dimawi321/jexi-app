@@ -37,6 +37,10 @@ import {
   setOccurrenceState,
   getOccurrenceRecord,
   deleteOccurrenceRecord,
+  isAccountWalletConnected,
+  setAccountWalletConnected,
+  getAccountConnectedWallet,
+  getAuthenticatedUid,
 } from './storage/storage';
 import {
   ConnectedWalletBalance,
@@ -176,6 +180,8 @@ export default function App() {
               setRecipients([]);
               setIntentions([]);
               setHistory([]);
+              setWalletState(INITIAL_WALLET_STATE);
+              setWalletBalance(INITIAL_WALLET_BALANCE);
             }
           }
         }
@@ -204,44 +210,45 @@ export default function App() {
       return cid === BASE_MAINNET_CHAIN_ID;
     };
 
-    // Check if wallet is already connected, or auto-connect if inside Ledger Wallet environment
-    checkConnectedWallet().then(async ({ address, chainId, providerId, providerName }) => {
-      if (!isSubscribed) return;
-      if (address) {
-        setWalletState({
-          address,
-          chainId,
-          providerId,
-          providerName,
-          isConnecting: false,
-          isConnected: true,
-          isWrongNetwork: chainId !== null && !isSupportedBaseNetwork(chainId),
-          isAvailable: true,
-          error: null,
-        });
-      } else if (isLedgerLiveEnvironment()) {
-        // Step 5: Safe Ledger auto-connect inside Ledger Wallet dApp WebView
-        try {
-          const ledgerResult = await connectBrowserWallet('ledger');
-          if (!isSubscribed) return;
-          if (ledgerResult.address) {
-            setWalletState({
-              address: ledgerResult.address,
-              chainId: ledgerResult.chainId || BASE_MAINNET_CHAIN_ID,
-              providerId: 'ledger',
-              providerName: 'Ledger',
-              isConnecting: false,
-              isConnected: true,
-              isWrongNetwork: ledgerResult.chainId !== null && !isSupportedBaseNetwork(ledgerResult.chainId),
-              isAvailable: true,
-              error: null,
-            });
-          }
-        } catch {
-          // Non-blocking: user can still click connect manually
+    // Check if wallet was explicitly connected for this JEXI profile
+    const profileId = currentUser?.id || getAuthenticatedUid();
+    const explicitlyConnected = isAccountWalletConnected(profileId);
+    const expectedAddress = getAccountConnectedWallet(profileId);
+
+    if (explicitlyConnected) {
+      checkConnectedWallet().then(async ({ address, chainId, providerId, providerName }) => {
+        if (!isSubscribed) return;
+        // Verify address exists and matches profile's expected connected address (if recorded)
+        if (address && (!expectedAddress || expectedAddress === 'true' || address.toLowerCase() === expectedAddress.toLowerCase())) {
+          setWalletState({
+            address,
+            chainId,
+            providerId,
+            providerName,
+            isConnecting: false,
+            isConnected: true,
+            isWrongNetwork: chainId !== null && !isSupportedBaseNetwork(chainId),
+            isAvailable: true,
+            error: null,
+          });
+        } else {
+          // Address no longer returned by provider or differs from profile's authorized wallet:
+          // clear profile connection preference and reset to disconnected state
+          setAccountWalletConnected(profileId, false);
+          setWalletState(INITIAL_WALLET_STATE);
+          setWalletBalance(INITIAL_WALLET_BALANCE);
         }
-      }
-    });
+      }).catch(() => {
+        if (isSubscribed) {
+          setWalletState(INITIAL_WALLET_STATE);
+          setWalletBalance(INITIAL_WALLET_BALANCE);
+        }
+      });
+    } else {
+      // Profile has no explicit wallet connection preference: start strictly disconnected
+      setWalletState(INITIAL_WALLET_STATE);
+      setWalletBalance(INITIAL_WALLET_BALANCE);
+    }
 
     // Subscribe to EIP-1193 events
     const unsubEvents = subscribeToWalletEvents({
@@ -252,6 +259,7 @@ export default function App() {
         } else {
           try {
             const checksummed = accounts[0] as `0x${string}`;
+            setAccountWalletConnected(profileId, true, checksummed);
             setWalletState((prev) => ({
               ...prev,
               address: checksummed,
@@ -283,7 +291,7 @@ export default function App() {
       isSubscribed = false;
       unsubEvents();
     };
-  }, []);
+  }, [currentUser?.id]);
 
   // Live Connected Wallet Balance Sync
   useEffect(() => {
@@ -332,6 +340,9 @@ export default function App() {
         isAvailable: true,
         error: null,
       });
+      // Persist explicit connection preference and connected address for this active JEXI profile
+      const profileId = currentUser?.id || getAuthenticatedUid();
+      setAccountWalletConnected(profileId, true, result.address);
       setIsWalletModalOpen(false);
 
       // Trigger immediate live on-chain balance query for the connected address
@@ -350,6 +361,8 @@ export default function App() {
   };
 
   const handleDisconnectWallet = () => {
+    const profileId = currentUser?.id || getAuthenticatedUid();
+    setAccountWalletConnected(profileId, false);
     setWalletState(disconnectBrowserWallet());
     setWalletBalance(INITIAL_WALLET_BALANCE);
   };
@@ -1126,6 +1139,8 @@ export default function App() {
               setRecipients([]);
               setIntentions([]);
               setHistory([]);
+              setWalletState(INITIAL_WALLET_STATE);
+              setWalletBalance(INITIAL_WALLET_BALANCE);
               setIsAccountModalOpen(true);
             } else {
               setIsAccountModalOpen(true);
